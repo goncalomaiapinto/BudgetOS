@@ -1,7 +1,7 @@
 # Orçamento Pessoal
 
 Aplicação pessoal, **100% local**, para registar quanto ganho e quanto gasto por mês. Substitui a folha Excel
-`OrcamentoPessoal.xlsx` que usei durante anos e mantém o seu aspeto: secção **RENDA** a azul, **DESPESAS** a
+`OrcamentoPessoal.xlsx` que usei durante anos e mantém o seu aspeto: secção **RECEITA** a azul, **DESPESAS** a
 vermelho e totais a verde. A isso junta um dashboard, uma lista de transações com filtros e uma gestão de
 categorias.
 
@@ -25,7 +25,7 @@ categorias.
 6. [API](#api)
 7. [Ecrãs e atalhos](#ecrãs-e-atalhos)
 8. [Saldo Anterior e saldo inicial](#saldo-anterior-e-saldo-inicial)
-   - [Cartão Refeição](#cartão-refeição)
+   - [Contas (bancos e cartão refeição)](#contas-bancos-e-cartão-refeição)
 9. [Backup e restauro](#backup-e-restauro)
 10. [Categorias](#categorias)
 11. [Roadmap / Fase 2](#roadmap--fase-2)
@@ -225,7 +225,7 @@ para ficarem legíveis no SSMS.
 |---|---|---|
 | Id | int | PK |
 | Name | nvarchar(100) | único por tipo |
-| Type | `Income` \| `Expense` | Renda ou Despesa |
+| Type | `Income` \| `Expense` | Receita ou Despesa |
 | Color | `#RRGGBB`, opcional | usada nos gráficos e listas |
 | SortOrder | int | ordem na grelha e nos selects |
 | IsActive | bit | `0` esconde a categoria nos selects de nova transação e mantém o histórico |
@@ -248,7 +248,7 @@ para ficarem legíveis no SSMS.
 | Type | `Income` \| `Expense` | tem de ser igual ao tipo da categoria |
 | CategoryId | int | FK → Categories |
 | SubCategoryId | int, opcional | FK → SubCategories; tem de pertencer à categoria |
-| Account | `Main` \| `MealCard` | de onde sai / para onde entra o dinheiro: conta à ordem (omissão) ou cartão refeição |
+| AccountId | int | FK → Accounts: de onde sai / para onde entra o dinheiro (se não for indicado, a conta principal) |
 | Amount | decimal(18,2) | **sempre positivo**; o sinal vem do `Type` |
 | Description | nvarchar(500), opcional | texto livre |
 | CreatedAt / UpdatedAt | datetime2 (UTC) | |
@@ -264,9 +264,37 @@ para ficarem legíveis no SSMS.
 | Id | int | PK |
 | Year, Month | int | mês da previsão |
 | SubCategoryId | int | FK → SubCategories (apagada em cascata com a subcategoria) |
-| Amount | decimal(18,2) | valor previsto (> 0). Renda ou despesa, conforme o tipo da categoria. |
+| Amount | decimal(18,2) | valor previsto (> 0). Receita ou despesa, conforme o tipo da categoria. |
+| AccountId | int, opcional | FK → Accounts: conta onde se espera o movimento (vazio = conta principal; `SET NULL` se a conta for apagada) |
 
 Índice único `(Year, Month, SubCategoryId)`.
+
+**Accounts** (contas: bancos, cartão refeição)
+
+| Campo | Tipo | Notas |
+|---|---|---|
+| Id | int | PK |
+| Name | nvarchar(100) | ex.: "Millennium", "Revolut" (único) |
+| Kind | `Bank` \| `MealCard` | o cartão refeição é escolhido sozinho nos carregamentos (Receitas › Cartão Refeição) |
+| Color | `#RRGGBB`, opcional | |
+| SortOrder, IsActive | | inativa = não aparece nas novas transações, mantém o histórico |
+| IsDefault | bit | a conta principal (há sempre exatamente uma) |
+| OpeningBalance | decimal(18,2) | saldo na data de início |
+
+As transações usam `ON DELETE RESTRICT` para as contas: apagar uma conta com transações obriga a movê-las antes.
+
+**Transfers** (transferências entre contas)
+
+| Campo | Tipo | Notas |
+|---|---|---|
+| Id | int | PK |
+| Date | date | |
+| FromAccountId / ToAccountId | int | FK → Accounts (`RESTRICT`); têm de ser diferentes (check constraint) |
+| Amount | decimal(18,2) | sempre positivo |
+| Description | nvarchar(500), opcional | |
+| CreatedAt / UpdatedAt | datetime2 (UTC) | |
+
+Não são transações: mudam o saldo das duas contas, mas não entram em receitas, despesas nem categorias.
 
 **Holdings** (investimentos: ações, fundo de emergência…)
 
@@ -278,7 +306,7 @@ para ficarem legíveis no SSMS.
 | SortOrder, IsActive | | |
 
 `SubCategories.HoldingId` (opcional, FK → Holdings, `SET NULL` ao apagar) liga uma subcategoria a um investimento.
-Despesas nessa subcategoria são dinheiro **posto** no investimento; rendas são dinheiro **retirado**. Cada
+Despesas nessa subcategoria são dinheiro **posto** no investimento; receitas são dinheiro **retirado**. Cada
 subcategoria só pode estar ligada a um investimento.
 
 **HoldingValuations** (atualizações de valor)
@@ -295,9 +323,7 @@ subcategoria só pode estar ligada a um investimento.
 
 | Key | Value |
 |---|---|
-| `OpeningBalance` | saldo inicial da conta à ordem (ex.: `500.05`) |
-| `MealCardOpeningBalance` | saldo inicial do cartão refeição |
-| `OpeningBalanceDate` | data a partir da qual conta (`yyyy-MM-dd`) |
+| `OpeningBalanceDate` | data a partir da qual os saldos contam (`yyyy-MM-dd`); os saldos iniciais estão em cada conta |
 
 Regras das FKs: as transações usam `ON DELETE RESTRICT`, e nunca são apagadas em cascata sem aviso (a API trata
 disso explicitamente, ver [Categorias](#categorias)). As subcategorias são apagadas com a categoria.
@@ -312,9 +338,9 @@ pt-PT. Os erros de validação são `400` com `errors: { campo: [mensagens] }`.
 | Método | Rota | Descrição |
 |---|---|---|
 | GET | `/api/health` | verificação de estado |
-| GET | `/api/transactions` | lista. Filtros: `from`, `to` (yyyy-MM-dd), `type`, `categoryId`, `subCategoryId`, `account` (`Main`/`MealCard`), `search` (descrição), `minAmount`, `maxAmount`. `sort` = `date_desc` (omissão) \| `date_asc` \| `amount_desc` \| `amount_asc`. `page`, `pageSize` (omissão 50, máx. 1000). Devolve `{ items, totalCount, page, pageSize, totals: { income, expense, net } }`, e os totais cobrem o filtro inteiro, não só a página. |
+| GET | `/api/transactions` | lista. Filtros: `from`, `to` (yyyy-MM-dd), `type`, `categoryId`, `subCategoryId`, `accountId`, `search` (descrição), `minAmount`, `maxAmount`. `sort` = `date_desc` (omissão) \| `date_asc` \| `amount_desc` \| `amount_asc`. `page`, `pageSize` (omissão 50, máx. 1000). Devolve `{ items, totalCount, page, pageSize, totals: { income, expense, net } }`, e os totais cobrem o filtro inteiro, não só a página. |
 | GET | `/api/transactions/{id}` | uma transação |
-| POST | `/api/transactions` | criar: `{ date, type, categoryId, subCategoryId?, account?, amount, description? }` (`account` por omissão `Main`) |
+| POST | `/api/transactions` | criar: `{ date, type, categoryId, subCategoryId?, accountId?, amount, description? }` (sem `accountId` → conta principal) |
 | PUT | `/api/transactions/{id}` | editar (mesmo corpo) |
 | DELETE | `/api/transactions/{id}` | apagar |
 | GET | `/api/categories` | categorias com subcategorias e nº de transações. Opcional: `type`, `activeOnly=true` |
@@ -329,8 +355,8 @@ pt-PT. Os erros de validação são `400` com `errors: { campo: [mensagens] }`.
 | PUT | `/api/subcategories/{id}` | `{ categoryId, name, sortOrder?, isActive? }`. Mudar o `categoryId` move também as transações associadas (tem de ser do mesmo tipo). |
 | POST | `/api/subcategories/reorder` | `{ ids: [...] }` |
 | DELETE | `/api/subcategories/{id}` | ver regras abaixo |
-| GET | `/api/reports/monthly-grid?year=AAAA[&account=MealCard]` | matriz categoria/subcategoria × 12 meses com totais, `previousBalance[12]`, `net[12]` e `endBalance[12]`; com `account`, só essa conta (e o saldo inicial dela) |
-| GET | `/api/reports/dashboard?year=AAAA&month=MM` | mês atual e anterior (renda, despesa, saldo, saldo acumulado, % poupada), saldo de cada conta no fim do mês (`accountBalances`), série dos últimos 12 meses, despesas por categoria, top 5 subcategorias e últimas 10 transações |
+| GET | `/api/reports/monthly-grid?year=AAAA[&accountId=N]` | matriz categoria/subcategoria × 12 meses com totais, `previousBalance[12]`, `net[12]` e `endBalance[12]`; sem filtro inclui `previousBalanceByAccount` (Saldo Anterior por conta); com `accountId`, só essa conta (e o saldo inicial dela) |
+| GET | `/api/reports/dashboard?year=AAAA&month=MM` | mês atual e anterior (receita, despesa, saldo, saldo acumulado, % poupada), saldo de cada conta no fim do mês (`accountBalances`), série dos últimos 12 meses, despesas por categoria, top 5 subcategorias e últimas 10 transações |
 | GET | `/api/budget?year=AAAA&month=MM` | previsão do mês: por categoria/subcategoria `planned`, `actual` e `projected`, totais, saldo anterior e saldos finais previsto/projetado/real |
 | PUT | `/api/budget?year=AAAA&month=MM` | substitui a previsão do mês: `{ items: [{ subCategoryId, amount }] }` (valor 0 ou ausente = sem previsão) |
 | GET | `/api/budget/suggestions?year=AAAA&month=MM&source=plan\|actual\|average` | valores para pré-preencher: previsão do mês anterior, real do mês anterior ou média real dos últimos 3 meses |
@@ -341,8 +367,16 @@ pt-PT. Os erros de validação são `400` com `errors: { campo: [mensagens] }`.
 | DELETE | `/api/holdings/{id}` | apaga o investimento e o histórico de valores; transações e subcategorias ficam |
 | POST | `/api/holdings/{id}/valuations` | `{ date, value, note? }` (no mesmo dia substitui) |
 | PUT / DELETE | `/api/valuations/{id}` | editar / apagar uma atualização |
-| GET | `/api/settings` | `{ openingBalance, mealCardOpeningBalance, startDate }` |
-| PUT | `/api/settings` | `{ openingBalance, mealCardOpeningBalance?, startDate }` |
+| GET | `/api/transfers` | transferências (sem paginação). Filtros: `from`, `to`, `accountId` (origem ou destino), `search` |
+| POST | `/api/transfers` | `{ date, fromAccountId, toAccountId, amount, description? }` |
+| PUT / DELETE | `/api/transfers/{id}` | editar / apagar |
+| GET | `/api/accounts` | contas com saldo inicial, saldo atual e nº de transações |
+| POST | `/api/accounts` | `{ name, kind, color?, isActive, isDefault, openingBalance }` |
+| PUT | `/api/accounts/{id}` | idem (marcar `isDefault` tira-o à anterior) |
+| POST | `/api/accounts/reorder` | `{ ids: [...] }` |
+| DELETE | `/api/accounts/{id}[?moveToAccountId=N]` | com transações/transferências: `409` sem destino; com `moveToAccountId` move-as e apaga (transferências entre as duas contas desaparecem). A principal não se apaga. |
+| GET | `/api/settings` | `{ startDate }` |
+| PUT | `/api/settings` | `{ startDate }` |
 
 **Regras de DELETE (categorias e subcategorias):**
 
@@ -366,13 +400,13 @@ Invoke-RestMethod http://localhost:5100/api/transactions?from=2026-09-01`&to=202
 
 ### Botão "Nova transação" (topo, sempre visível)
 
-Abre um modal com o tipo (**Renda**/**Despesa**), a conta (**Conta à ordem**/**Cartão Refeição**), o valor (foco automático; aceita `12,5`, `1.234,56` ou
+Abre um modal com o tipo (**Receita**/**Despesa**), a conta ("Sai de" / "Entra em": **Millennium**, **Revolut**, **Cartão Refeição**…), o valor (foco automático; aceita `12,5`, `1.234,56` ou
 `1 234,56`, e também **contas** como `12,40+3,10` ou `3*15`, que ficam com o resultado ao sair do campo), a data, a categoria e a subcategoria (filtradas pelo tipo) e uma descrição opcional.
 
 - A data vem por omissão com a **última data usada na sessão** (ou hoje). Aceita `5` (dia 5 do mês atual), `5/9`,
   `05/09/26` e `05/09/2026`. **↑/↓** muda um dia e o ícone abre o calendário.
 - A última categoria usada é lembrada para cada tipo.
-- A conta é sugerida automaticamente (ver [Cartão Refeição](#cartão-refeição)).
+- A conta é sugerida automaticamente (ver [Contas](#contas-bancos-e-cartão-refeição)).
 - Categorias e subcategorias inativas não aparecem, exceto ao editar uma transação que já as usa.
 
 | Atalho | Ação |
@@ -387,9 +421,9 @@ Abre um modal com o tipo (**Renda**/**Despesa**), a conta (**Conta à ordem**/**
 
 Seletor de mês (‹ ›, "Hoje"). Mostra:
 
-- Cartões com a renda, as despesas, o saldo do mês, o saldo acumulado (com o detalhe conta à ordem · cartão refeição), a **% poupada** (saldo ÷ renda) e os **Investimentos** (com o património total). Cada
+- Cartões com a receita, as despesas, o saldo do mês, o saldo acumulado (com o detalhe por conta), a **% poupada** (saldo ÷ receita) e os **Investimentos** (com o património total). Cada
   cartão compara com o mês anterior: seta e cor indicam se a variação é boa ou má (nas despesas, subir é mau).
-- Um gráfico de barras dos últimos 12 meses (renda vs despesas), com o saldo do mês em linha. O tooltip mostra
+- Um gráfico de barras dos últimos 12 meses (receita vs despesas), com o saldo do mês em linha. O tooltip mostra
   também o saldo acumulado.
 - Um donut das despesas por categoria, com a lista ao lado (valor e %). Clicar abre as transações dessa categoria.
 - O top 5 das subcategorias de despesa do mês.
@@ -397,13 +431,13 @@ Seletor de mês (‹ ›, "Hoje"). Mostra:
 
 ### Orçamento (grelha estilo Excel)
 
-- Ano e conta selecionáveis (**Todas as contas** / **Conta à ordem** / **Cartão Refeição**). Colunas **Jan–Dez**, **Total** e **Média**.
+- Ano e conta selecionáveis (**Todas as contas** ou uma conta). Colunas **Jan–Dez**, **Total** e **Média**.
 - Os meses passados sem transações não aparecem. A Média é o total a dividir pelos meses decorridos
   no ano corrente, ou por 12 nos outros anos.
-- **RENDA**: cabeçalho azul-escuro, linhas azul-claro, linha **Saldo Anterior** calculada e **TOTAL** a verde. O
+- **RECEITA**: cabeçalho azul-escuro, linhas azul-claro, linha **Saldo Anterior** calculada e **TOTAL** a verde. O
   TOTAL soma só as receitas do mês; o dinheiro acumulado aparece nas linhas de saldo no fundo.
 - **DESPESAS**: cabeçalho vermelho, um grupo por categoria com subtotal em rosa mais escuro, e **TOTAL** geral.
-- No fundo, **Saldo do mês** (renda − despesas) e **Saldo acumulado** (saldo no fim de cada mês).
+- No fundo, **Saldo do mês** (receita − despesas) e **Saldo acumulado** (saldo no fim de cada mês).
 - Valores a zero aparecem como **–** em cinzento claro.
 - O cabeçalho e a primeira coluna ficam fixos ao fazer scroll.
 - Clicar no nome de um grupo recolhe-o e o subtotal passa para essa linha. O estado fica guardado no browser.
@@ -412,8 +446,9 @@ Seletor de mês (‹ ›, "Hoje"). Mostra:
 - **Duplo clique numa célula** abre "Nova transação" já preenchida com essa categoria/subcategoria e mês. A data é
   hoje no mês atual, o último dia nos meses passados e o dia 1 nos futuros. A conta é a do filtro, se estiver
   filtrado pelo cartão.
-- Com **Todas as contas**, o Saldo Anterior mostra por baixo a divisão **Conta à ordem / Cartão Refeição**; o saldo
-  inicial do cartão entra no total e aparece nessa sublinha.
+- Com **Todas as contas**, o Saldo Anterior mostra por baixo uma sublinha por conta (**↳ saldo Millennium**,
+  **↳ saldo Revolut**, **↳ saldo Cartão Refeição**). Duplo clique numa delas regista uma receita nessa conta (no
+  cartão, um carregamento).
 - O mês atual aparece destacado, e os meses futuros sem valores ficam esbatidos.
 
 ### Previsão
@@ -421,6 +456,8 @@ Seletor de mês (‹ ›, "Hoje"). Mostra:
 É aqui que se planeia o mês e se compara com o que aconteceu.
 
 - Os campos aceitam **contas**: `10+20` passa a `30,00` ao sair do campo (também `-`, `*`, `/` e parênteses).
+- Cada linha tem a sua **conta** (de onde sai / para onde entra). O quadro **Por conta** mostra, para cada conta, o
+  saldo anterior, o previsto no mês, o saldo final previsto e a projeção para o fim do mês.
 - **No início do mês**, escreva em cada subcategoria quanto espera receber ou gastar, e carregue em **Guardar
   previsão** (ou Enter num campo). Os campos alterados ficam destacados até guardar.
 - **Preencher com:** copia a previsão do mês anterior, o real do mês anterior ou a média real dos últimos 3 meses.
@@ -430,10 +467,10 @@ Seletor de mês (‹ ›, "Hoje"). Mostra:
 - **Diferença:** positiva é bom (recebeu mais, ou gastou menos). Enquanto o mês não fecha, o que ainda está por
   gastar ou receber aparece em cinzento, porque ainda não é um resultado.
 - **Cartões no topo:**
-  - Renda e Despesas, previsto → real.
-  - **Saldo final previsto** = saldo anterior + renda prevista − despesas previstas.
+  - Receita e Despesas, previsto → real.
+  - **Saldo final previsto** = saldo anterior + receita prevista − despesas previstas.
   - **Projeção para o fim do mês** = saldo anterior + (para cada linha, o maior entre o previsto e o real) na
-    renda, − o mesmo nas despesas. Ou seja, assume que o que está previsto e ainda não aconteceu vai acontecer, e
+    receita, − o mesmo nas despesas. Ou seja, assume que o que está previsto e ainda não aconteceu vai acontecer, e
     que o que já passou do previsto fica como está. Nos meses fechados mostra o **saldo final real**. Por baixo
     aparece a diferença para o saldo previsto ("X € melhor/pior do que o previsto").
 - **Só linhas com valores** esconde as linhas sem previsto nem real. A escolha fica guardada no browser.
@@ -446,13 +483,13 @@ numa conta a render, etc.
 - **Pôr dinheiro:** é uma **despesa** normal numa subcategoria ligada ao investimento. Já existe a categoria
   **Investimentos**, com **Ações (XTB)** e **Fundo de emergência**, ligadas aos investimentos com o mesmo nome. No
   orçamento conta como despesa; aqui conta como **investido**.
-- **Tirar dinheiro:** é uma renda numa subcategoria ligada (ex.: crie "Renda › Resgate fundo" e ligue-a ao fundo).
+- **Tirar dinheiro:** é uma receita numa subcategoria ligada (ex.: crie "Receitas › Resgate fundo" e ligue-a ao fundo).
   Reduz o investido.
 - **Atualizar valor:** de vez em quando veja quanto tem na XTB ou na conta e registe o valor com a data.
   - Enquanto escreve, o diálogo mostra **quanto cresceu desde a atualização anterior**, em € e %.
   - A mensagem de confirmação repete a % e fica tudo no histórico.
 - **Cálculos:**
-  - **Investido** = despesas − rendas nas subcategorias ligadas.
+  - **Investido** = despesas − receitas nas subcategorias ligadas.
   - **Variação desde a atualização anterior** = valor novo − valor anterior − o investido entretanto. Assim, um
     reforço não é contado como crescimento. **%** = variação ÷ (valor anterior + investido entretanto). Exemplo:
     440 € → reforço de 200 € → 660 € dá +20 € (+3,1%).
@@ -466,7 +503,9 @@ numa conta a render, etc.
 
 ### Transações
 
-Uma tabela com Data, Tipo, Categoria, Subcategoria, Descrição e Valor (verde para renda, vermelho para despesa).
+Uma tabela com Data, Tipo, Categoria, Subcategoria, Conta, Descrição e Valor (verde para receita, vermelho para
+despesa). As **transferências** aparecem na mesma lista (⇄, "Millennium → Revolut"); com uma conta filtrada ficam
+com + (entrada) ou − (saída). O filtro Tipo tem a opção **Transferência**.
 
 - **Filtros:** período (Mês/Ano/Tudo, com ‹ ›), tipo, categoria, subcategoria, conta e pesquisa na descrição. As
   transações do cartão refeição têm um ícone de cartão junto ao valor. Os filtros
@@ -481,7 +520,9 @@ Ver [Categorias](#categorias).
 
 ### Definições
 
-Aqui define-se o saldo inicial e a data de início (ver a secção seguinte).
+- **Data de início**: a partir de quando os saldos contam.
+- **Contas**: criar, editar (nome, tipo, cor, saldo inicial, principal, ativa), reordenar e apagar. Cada linha mostra o
+  saldo inicial, o saldo atual e o nº de transações. Apagar uma conta com transações pede a conta para onde as mover.
 
 ---
 
@@ -489,11 +530,11 @@ Aqui define-se o saldo inicial e a data de início (ver a secção seguinte).
 
 O **Saldo Anterior não é uma transação**: é calculado automaticamente, como no Excel (onde `C3 = B10 − B56`).
 
-- Em **Definições** indica-se o **saldo inicial** (`OpeningBalance`, pode ser negativo) e a **data de início**
-  (`OpeningBalanceDate`).
-- O mês da data de início tem como Saldo Anterior o próprio saldo inicial.
-- Para cada mês seguinte, **Saldo Anterior = saldo inicial + Σ(receitas − despesas)** de todos os meses desde o mês
-  de início até ao mês anterior.
+- Em **Definições** indica-se a **data de início** e, em cada conta, o **saldo inicial** nessa data (pode ser
+  negativo).
+- O mês da data de início tem como Saldo Anterior a soma dos saldos iniciais das contas.
+- Para cada mês seguinte, **Saldo Anterior = saldos iniciais + Σ(receitas − despesas)** de todos os meses desde o mês
+  de início até ao mês anterior. O mesmo cálculo é feito por conta (sublinhas "↳ saldo …" na grelha).
 - **Saldo acumulado** (fim do mês) = Saldo Anterior + receitas do mês − despesas do mês.
 - Os meses antes do mês de início não têm saldo (a célula fica vazia). As transações desses meses continuam a
   aparecer nas somas por categoria, mas não entram nos saldos.
@@ -501,21 +542,26 @@ O **Saldo Anterior não é uma transação**: é calculado automaticamente, como
 Exemplo, com os dados do Excel: saldo inicial 500,05 € e início em 01/07/2025. O Saldo Anterior de julho/2025 é
 500,05 €, e o de agosto é 500,05 € + (receitas − despesas de julho).
 
-### Cartão Refeição
+### Contas (bancos e cartão refeição)
 
-Cada transação indica **de onde sai (ou para onde entra) o dinheiro**: **Conta à ordem** ou **Cartão Refeição**.
-A categoria continua a dizer *em quê* gastaste, e a conta diz *com quê* pagaste. Por exemplo, "Dia a Dia /
-Restaurante" pago com o cartão.
+Cada transação indica **de onde sai (ou para onde entra) o dinheiro**: uma das contas definidas em Definições (ex.:
+**Millennium**, **Revolut**, **Cartão Refeição**). A categoria continua a dizer *em quê* gastaste, e a conta diz
+*com quê* pagaste.
 
-- **Carregamento mensal:** registe-o como Renda / **Cartão Refeição**. Ao escolher essa subcategoria, o modal
-  seleciona sozinho a conta Cartão Refeição.
-- **Gastos:** escolha "Cartão Refeição" em "Pago com". A app lembra a conta usada da última vez em cada
-  subcategoria, por isso se o Restaurante é sempre pago com o cartão, ele vem pré-selecionado.
-- **Saldos:** o saldo do cartão acumula de mês para mês. Os totais e o saldo acumulado somam as duas contas. O
-  Dashboard mostra o detalhe e a grelha pode ser filtrada só pelo cartão (carregamentos, gastos e saldo mês a mês).
-- **Saldo inicial do cartão:** em Definições, com a mesma data de início da conta à ordem.
+- **Conta principal:** é a sugerida por omissão; há sempre uma.
+- **Sugestão automática:** a app lembra a conta usada da última vez em cada subcategoria (se pagas o Restaurante com
+  a Revolut, da próxima vez vem a Revolut). Numa receita "Cartão Refeição" escolhe sozinha a conta do tipo cartão
+  refeição.
+- **Saldos:** cada conta tem o seu saldo inicial e acumula de mês para mês. Os totais e o saldo acumulado somam
+  todas as contas; o Dashboard mostra o detalhe por conta e a grelha pode ser filtrada por conta.
+- **Previsão:** cada linha tem a sua conta, e o quadro **Por conta** mostra o saldo anterior, o previsto no mês, o
+  saldo final previsto e a projeção de cada conta.
+- **Transferências entre contas** (ex.: Millennium → Revolut): em "Nova transação", separador **Transferência**
+  (De, Para, valor, data). Só mexe no saldo das duas contas: **não conta como receita nem despesa**, por isso não
+  altera os totais, a % poupada nem a Previsão. Aparecem na lista de Transações (⇄, "Millennium → Revolut"), e com
+  uma conta filtrada na grelha há uma linha **Transferências** com as entradas − saídas dessa conta.
 - A antiga subcategoria "Supermercado (cartão refeição)" foi desativada, porque agora é "Supermercado" pago com o
-  cartão. A migration moveu para lá as transações que existissem.
+  cartão.
 
 ---
 
@@ -551,7 +597,7 @@ Alternativa sem `sqlcmd`: no SSMS, clique com o botão direito na BD, depois **T
 
 Tudo se faz na página **Categorias**, sem ir à base de dados. As categorias iniciais vêm do Excel:
 
-- **Renda** (tipo Renda): Vencimento, Cartão Refeição, Prendas, Subsídios / Bónus, IRS, Outros
+- **Receitas** (tipo Receita): Vencimento, Cartão Refeição, Prendas, Subsídios / Bónus, IRS, Outros
 - **Transportes**: Mensalidade Carro, Seguro Carro, Manutenção Carro, Combustível, IUC
 - **Dia a Dia**: Supermercado, Restaurante, Café, Eletrónica, Barbeiro, Roupa
 - **Lazer**: Cinema/concertos, Noite, Desporto, Férias
@@ -560,12 +606,12 @@ Tudo se faz na página **Categorias**, sem ir à base de dados. As categorias in
   Poupança, Outros
 - **Investimentos**: Ações (XTB), Fundo de emergência (ligadas aos investimentos com o mesmo nome)
 
-Na Renda, as linhas do Excel (Vencimento, Cartão Refeição, …) passaram a ser subcategorias de uma categoria
-"Renda", para que receitas e despesas tenham a mesma estrutura Categoria → Subcategoria.
+Nas receitas, as linhas do Excel (Vencimento, Cartão Refeição, …) passaram a ser subcategorias de uma categoria
+"Receitas", para que receitas e despesas tenham a mesma estrutura Categoria → Subcategoria.
 
 | Ação | Como |
 |---|---|
-| Criar categoria | botão **Nova categoria** no cabeçalho de RENDA ou DESPESAS (nome, tipo, cor) |
+| Criar categoria | botão **Nova categoria** no cabeçalho de RECEITA ou DESPESAS (nome, tipo, cor) |
 | Criar subcategoria | expandir a categoria e usar **+ Nova subcategoria** (Enter adiciona e deixa o campo pronto para a seguinte) |
 | Renomear / mudar cor | ícone ✎. **As transações não mudam**, porque estão ligadas por Id. |
 | Mudar subcategoria de categoria | ✎ na subcategoria, escolhendo outra categoria do mesmo tipo. As transações dessa subcategoria passam também para a nova categoria. |

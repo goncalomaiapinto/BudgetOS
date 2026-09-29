@@ -675,7 +675,7 @@ function HoldingDialog({
         <div>
           <label className="label">Subcategorias ligadas</label>
           <p className="mb-2 text-xs text-muted">
-            Despesas nestas subcategorias contam como dinheiro posto aqui; rendas contam como dinheiro retirado.
+            Despesas nestas subcategorias contam como dinheiro posto aqui; receitas contam como dinheiro retirado.
           </p>
           <div className="max-h-64 space-y-2 overflow-y-auto rounded-md border border-line p-2">
             {categories
@@ -684,7 +684,7 @@ function HoldingDialog({
               .map((c) => (
               <div key={c.id}>
                 <div className="text-xs font-semibold tracking-wide text-muted uppercase">
-                  {c.name} <span className="font-normal normal-case">({c.type === 'Income' ? 'renda' : 'despesa'})</span>
+                  {c.name} <span className="font-normal normal-case">({c.type === 'Income' ? 'receita' : 'despesa'})</span>
                 </div>
                 <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5">
                   {c.subCategories.map((s) => {

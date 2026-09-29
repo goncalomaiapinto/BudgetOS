@@ -2,12 +2,57 @@
 
 export type EntryType = 'Income' | 'Expense'
 
-/** Where the money comes from / goes to. */
-export type PaymentAccount = 'Main' | 'MealCard'
+export type AccountKind = 'Bank' | 'MealCard'
 
-export const ACCOUNT_LABELS: Record<PaymentAccount, string> = {
-  Main: 'Conta à ordem',
-  MealCard: 'Cartão Refeição',
+/** Where the money comes from / goes to (bank accounts, meal card). */
+export interface Account {
+  id: number
+  name: string
+  kind: AccountKind
+  color: string | null
+  sortOrder: number
+  isActive: boolean
+  isDefault: boolean
+  openingBalance: number
+  /** Opening balance + every transaction since the start month. */
+  balance: number
+  transactionCount: number
+  transferCount: number
+}
+
+/** Money moved between two accounts: changes both balances, never counts as income or expense. */
+export interface Transfer {
+  id: number
+  date: string
+  fromAccountId: number
+  fromAccountName: string
+  fromAccountKind: AccountKind
+  fromAccountColor: string | null
+  toAccountId: number
+  toAccountName: string
+  toAccountKind: AccountKind
+  toAccountColor: string | null
+  amount: number
+  description: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface TransferInput {
+  date: string
+  fromAccountId: number
+  toAccountId: number
+  amount: number
+  description: string | null
+}
+
+export interface AccountInput {
+  name: string
+  kind: AccountKind
+  color: string | null
+  isActive: boolean
+  isDefault: boolean
+  openingBalance: number
 }
 
 export interface SubCategory {
@@ -39,7 +84,10 @@ export interface Transaction {
   categoryColor: string | null
   subCategoryId: number | null
   subCategoryName: string | null
-  account: PaymentAccount
+  accountId: number
+  accountName: string
+  accountKind: AccountKind
+  accountColor: string | null
   amount: number
   description: string | null
   source: 'Manual' | 'Import'
@@ -52,7 +100,7 @@ export interface TransactionInput {
   type: EntryType
   categoryId: number
   subCategoryId: number | null
-  account: PaymentAccount
+  accountId: number
   amount: number
   description: string | null
 }
@@ -63,7 +111,7 @@ export interface TransactionFilter {
   type?: EntryType
   categoryId?: number
   subCategoryId?: number
-  account?: PaymentAccount
+  accountId?: number
   search?: string
   minAmount?: number
   maxAmount?: number
@@ -112,10 +160,18 @@ export interface MonthlyGrid {
   expense: GridSection
   previousBalance: (number | null)[]
   /** "Saldo Anterior" split per account (only without an account filter). */
-  previousBalanceMain?: (number | null)[] | null
-  previousBalanceMealCard?: (number | null)[] | null
+  previousBalanceByAccount?: {
+    accountId: number
+    name: string
+    kind: AccountKind
+    color: string | null
+    isActive: boolean
+    values: (number | null)[]
+  }[] | null
   net: number[]
   endBalance: (number | null)[]
+  /** With an account filter: that account's transfers (in − out) per month, already included in `net`. */
+  transfers?: number[] | null
 }
 
 export interface MonthSummary {
@@ -131,7 +187,7 @@ export interface MonthSummary {
 export interface Dashboard {
   current: MonthSummary
   /** Balance at the end of the selected month, per account. */
-  accountBalances: { main: number | null; mealCard: number | null }
+  accountBalances: { accountId: number; name: string; kind: AccountKind; color: string | null; balance: number | null }[]
   /** Estimated value of all investments at the end of the month. */
   investments: number
   previous: MonthSummary
@@ -156,6 +212,26 @@ export interface BudgetLine {
   planned: number
   actual: number
   projected: number
+  /** Account the line is planned on (null = the default account). */
+  accountId: number | null
+}
+
+export interface BudgetAccount {
+  id: number
+  name: string
+  kind: AccountKind
+  color: string | null
+  previousBalance: number | null
+  actualNet: number
+  plannedNet: number
+  plannedEnd: number | null
+  projectedEnd: number | null
+  actualIncome: number
+  actualExpense: number
+  plannedIncome: number
+  plannedExpense: number
+  /** Transfers in − out this month (included in projectedEnd). */
+  transferNet: number
 }
 
 export interface BudgetGroup {
@@ -182,9 +258,11 @@ export interface MonthBudget {
   plannedEndBalance: number | null
   projectedEndBalance: number | null
   actualEndBalance: number | null
+  defaultAccountId: number
+  accounts: BudgetAccount[]
 }
 
-export type BudgetItem = { subCategoryId: number; amount: number }
+export type BudgetItem = { subCategoryId: number; amount: number; accountId?: number | null }
 
 export interface Valuation {
   id: number
@@ -227,8 +305,6 @@ export interface HoldingInput {
 }
 
 export interface Settings {
-  openingBalance: number
-  mealCardOpeningBalance: number
   startDate: string
 }
 
@@ -301,9 +377,24 @@ export const api = {
     remove: (id: number, o: DeleteOptions = {}) => request<void>('DELETE', `/subcategories/${id}${qs(o)}`),
   },
   reports: {
-    grid: (year: number, account?: PaymentAccount) =>
-      request<MonthlyGrid>('GET', `/reports/monthly-grid${qs({ year, account })}`),
+    grid: (year: number, accountId?: number) =>
+      request<MonthlyGrid>('GET', `/reports/monthly-grid${qs({ year, accountId })}`),
     dashboard: (year: number, month: number) => request<Dashboard>('GET', `/reports/dashboard${qs({ year, month })}`),
+  },
+  transfers: {
+    list: (f: { from?: string; to?: string; accountId?: number; search?: string }) =>
+      request<Transfer[]>('GET', `/transfers${qs(f)}`),
+    create: (t: TransferInput) => request<Transfer>('POST', '/transfers', t),
+    update: (id: number, t: TransferInput) => request<Transfer>('PUT', `/transfers/${id}`, t),
+    remove: (id: number) => request<void>('DELETE', `/transfers/${id}`),
+  },
+  accounts: {
+    list: () => request<Account[]>('GET', '/accounts'),
+    create: (a: AccountInput) => request<Account>('POST', '/accounts', a),
+    update: (id: number, a: AccountInput) => request<Account>('PUT', `/accounts/${id}`, a),
+    reorder: (ids: number[]) => request<void>('POST', '/accounts/reorder', { ids }),
+    remove: (id: number, moveToAccountId?: number) =>
+      request<void>('DELETE', `/accounts/${id}${qs({ moveToAccountId })}`),
   },
   budget: {
     get: (year: number, month: number) => request<MonthBudget>('GET', `/budget${qs({ year, month })}`),

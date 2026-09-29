@@ -4,6 +4,7 @@ using Api.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Api.Data.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260929163714_AddAccounts")]
+    partial class AddAccounts
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -309,51 +312,6 @@ namespace Api.Data.Migrations
                     b.ToTable("Transactions");
                 });
 
-            modelBuilder.Entity("Api.Data.Transfer", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<decimal>("Amount")
-                        .HasPrecision(18, 2)
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<DateOnly>("Date")
-                        .HasColumnType("date");
-
-                    b.Property<string>("Description")
-                        .HasMaxLength(500)
-                        .HasColumnType("nvarchar(500)");
-
-                    b.Property<int>("FromAccountId")
-                        .HasColumnType("int");
-
-                    b.Property<int>("ToAccountId")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("Date");
-
-                    b.HasIndex("FromAccountId");
-
-                    b.HasIndex("ToAccountId");
-
-                    b.ToTable("Transfers", t =>
-                        {
-                            t.HasCheckConstraint("CK_Transfers_DifferentAccounts", "[FromAccountId] <> [ToAccountId]");
-                        });
-                });
-
             modelBuilder.Entity("Api.Data.BudgetPlan", b =>
                 {
                     b.HasOne("Api.Data.Account", "Account")
@@ -425,25 +383,6 @@ namespace Api.Data.Migrations
                     b.Navigation("Category");
 
                     b.Navigation("SubCategory");
-                });
-
-            modelBuilder.Entity("Api.Data.Transfer", b =>
-                {
-                    b.HasOne("Api.Data.Account", "FromAccount")
-                        .WithMany()
-                        .HasForeignKey("FromAccountId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("Api.Data.Account", "ToAccount")
-                        .WithMany()
-                        .HasForeignKey("ToAccountId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("FromAccount");
-
-                    b.Navigation("ToAccount");
                 });
 
             modelBuilder.Entity("Api.Data.Account", b =>

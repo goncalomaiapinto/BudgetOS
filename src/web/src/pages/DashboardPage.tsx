@@ -71,7 +71,7 @@ export default function DashboardPage() {
         <>
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
             <StatCard
-              label="Renda do mês"
+              label="Receita do mês"
               value={formatMoney(data.current.income)}
               delta={relDelta(data.current.income, data.previous.income)}
               goodWhenUp
@@ -97,13 +97,22 @@ export default function DashboardPage() {
               value={data.current.balance === null ? '—' : formatMoney(data.current.balance)}
               valueClass={(data.current.balance ?? 0) < 0 ? 'text-neg' : undefined}
               extra={
-                data.accountBalances.main !== null && data.accountBalances.mealCard !== null ? (
-                  <>
-                    Conta {formatMoney(data.accountBalances.main)} ·{' '}
-                    <span className="inline-flex items-center gap-0.5">
-                      <Icon name="card" size={12} /> {formatMoney(data.accountBalances.mealCard)}
-                    </span>
-                  </>
+                data.accountBalances.length > 1 && data.accountBalances.some((a) => a.balance !== null) ? (
+                  <ul className="space-y-0.5">
+                    {data.accountBalances.map((a) => (
+                      <li key={a.accountId} className="flex items-center gap-1.5">
+                        {a.kind === 'MealCard' ? (
+                          <Icon name="card" size={12} />
+                        ) : (
+                          <span className="size-1.5 rounded-full" style={{ background: a.color ?? 'var(--muted)' }} />
+                        )}
+                        <span className="truncate">{a.name}</span>
+                        <span className={cx('ml-auto tabular', (a.balance ?? 0) < 0 && 'text-neg')}>
+                          {a.balance === null ? '—' : formatMoney(a.balance)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
                 ) : undefined
               }
               delta={
@@ -151,7 +160,7 @@ export default function DashboardPage() {
 
           <div className="card p-4">
             <h2 className="mb-1 text-sm font-semibold">Últimos 12 meses</h2>
-            <p className="mb-3 text-xs text-muted">Renda e despesas por mês, com o saldo do mês em linha</p>
+            <p className="mb-3 text-xs text-muted">Receita e despesas por mês, com o saldo do mês em linha</p>
             <div className="h-72">
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart
@@ -187,7 +196,7 @@ export default function DashboardPage() {
                           <div className="mb-1 font-semibold">
                             {MONTHS[s.month - 1]} {s.year}
                           </div>
-                          <TipRow color="var(--c-inc)" label="Renda" value={s.income} />
+                          <TipRow color="var(--c-inc)" label="Receita" value={s.income} />
                           <TipRow color="var(--c-exp)" label="Despesas" value={s.expense} />
                           <TipRow color="var(--c-net)" label="Saldo do mês" value={s.net} line />
                           {s.balance !== null && (
@@ -207,7 +216,7 @@ export default function DashboardPage() {
                     itemSorter={null}
                     formatter={(v) => <span className="text-xs text-fg">{v}</span>}
                   />
-                  <Bar dataKey="income" name="Renda" fill="var(--c-inc)" radius={[4, 4, 0, 0]} maxBarSize={22} isAnimationActive={false} />
+                  <Bar dataKey="income" name="Receita" fill="var(--c-inc)" radius={[4, 4, 0, 0]} maxBarSize={22} isAnimationActive={false} />
                   <Bar dataKey="expense" name="Despesas" fill="var(--c-exp)" radius={[4, 4, 0, 0]} maxBarSize={22} isAnimationActive={false} />
                   <Line
                     dataKey="net"

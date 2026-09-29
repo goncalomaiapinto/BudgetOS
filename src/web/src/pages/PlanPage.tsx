@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Icon } from '../components/Icon'
 import { PeriodNav, monthLabel } from '../components/PeriodNav'
+import { suggestAccount } from '../lib/accounts'
 import { api, type BudgetGroup, type BudgetLine, type EntryType, type MonthBudget } from '../lib/api'
 import { useApp } from '../lib/app-context'
 import { amountToInput, cx, evalAmount, formatMoney, formatNumber, isExpression, MONTHS, shiftMonth } from '../lib/format'
@@ -22,7 +23,7 @@ const plannedOf = (text: string | undefined): number | null => {
 }
 
 export default function PlanPage() {
-  const { version, toast, refresh } = useApp()
+  const { version, toast, refresh, accounts, categories } = useApp()
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
   const today = new Date()
@@ -33,6 +34,8 @@ export default function PlanPage() {
   const [error, setError] = useState<string | null>(null)
   // Input text per subcategory id; compared with the saved plan to know if there are unsaved changes.
   const [values, setValues] = useState<Record<number, string>>({})
+  // Account per subcategory line (where the money is expected to come from / go to).
+  const [lineAccounts, setLineAccounts] = useState<Record<number, number>>({})
   const [busy, setBusy] = useState(false)
   const [onlyFilled, setOnlyFilled] = useState(() => {
     try {
@@ -53,10 +56,19 @@ export default function PlanPage() {
   const load = (d: MonthBudget) => {
     setData(d)
     const v: Record<number, string> = {}
-    for (const line of [...d.income, ...d.expense].flatMap((g) => g.lines)) {
-      if (line.subCategoryId !== null) v[line.subCategoryId] = line.planned ? amountToInput(line.planned) : ''
+    const acc: Record<number, number> = {}
+    for (const [type, groups] of [['Income', d.income], ['Expense', d.expense]] as const) {
+      for (const line of groups.flatMap((g) => g.lines)) {
+        if (line.subCategoryId === null) continue
+        v[line.subCategoryId] = line.planned ? amountToInput(line.planned) : ''
+        // Saved lines keep their account; new ones get the usual suggestion (last used, meal card, default).
+        acc[line.subCategoryId] = line.planned
+          ? (line.accountId ?? d.defaultAccountId)
+          : Number(suggestAccount(accounts, categories, type, line.subCategoryId)) || d.defaultAccountId
+      }
     }
     setValues(v)
+    setLineAccounts(acc)
   }
 
   useEffect(() => {
@@ -72,11 +84,15 @@ export default function PlanPage() {
     return () => {
       cancelled = true
     }
-  }, [year, month, version])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [year, month, version, accounts.length])
 
   const lines = useMemo(() => (data ? [...data.income, ...data.expense].flatMap((g) => g.lines) : []), [data])
+  const savedAccount = (l: BudgetLine) => l.accountId ?? data?.defaultAccountId
+  const accountChanged = (l: BudgetLine) =>
+    l.subCategoryId !== null && l.planned > 0 && lineAccounts[l.subCategoryId] !== savedAccount(l)
   const dirty = lines.some(
-    (l) => l.subCategoryId !== null && (plannedOf(values[l.subCategoryId]) ?? -1) !== l.planned,
+    (l) => l.subCategoryId !== null && ((plannedOf(values[l.subCategoryId]) ?? -1) !== l.planned || accountChanged(l)),
   )
   const invalid = lines.some((l) => l.subCategoryId !== null && plannedOf(values[l.subCategoryId]) === null)
 
@@ -94,6 +110,37 @@ export default function PlanPage() {
   const plannedEnd = totals && prev !== null ? prev + totals.income.planned - totals.expense.planned : null
   const projectedEnd = totals && prev !== null ? prev + totals.income.projected - totals.expense.projected : null
 
+  // Per account, recomputed live: planned end = previous + planned lines on the account;
+  // projection = previous + what really moved this month + what is planned on it and hasn't happened yet.
+  const lineAccount = (l: BudgetLine) => (l.subCategoryId === null ? undefined : lineAccounts[l.subCategoryId])
+  const signedLines = data
+    ? [
+        ...data.income.flatMap((g) => g.lines.map((l) => ({ l, sign: 1 }))),
+        ...data.expense.flatMap((g) => g.lines.map((l) => ({ l, sign: -1 }))),
+      ]
+    : []
+  const perAccount = (data?.accounts ?? []).map((a) => {
+    const mine = signedLines.filter(({ l }) => lineAccount(l) === a.id)
+    const plannedIncome = mine.reduce((sum, { l, sign }) => sum + (sign > 0 ? planned(l) : 0), 0)
+    const plannedExpense = mine.reduce((sum, { l, sign }) => sum + (sign < 0 ? planned(l) : 0), 0)
+    const plannedNet = plannedIncome - plannedExpense
+    const remaining =
+      data?.status === 'past' ? 0 : mine.reduce((sum, { l, sign }) => sum + sign * Math.max(planned(l) - l.actual, 0), 0)
+    return {
+      ...a,
+      plannedIncome,
+      plannedExpense,
+      plannedNet,
+      plannedEnd: a.previousBalance === null ? null : a.previousBalance + plannedNet,
+      // transfers already made this month move money between accounts (they don't touch income/expense)
+      projectedEnd: a.previousBalance === null ? null : a.previousBalance + a.actualNet + a.transferNet + remaining,
+    }
+  })
+
+  const sumOf = (f: (a: (typeof perAccount)[number]) => number | null) =>
+    perAccount.reduce((sum, a) => sum + (f(a) ?? 0), 0)
+  const anyBalance = perAccount.some((a) => a.previousBalance !== null)
+
   const go = (delta: number) => {
     if (dirty && !confirm('Há alterações por guardar. Mudar de mês sem guardar?')) return
     const n = shiftMonth(year, month, delta)
@@ -109,7 +156,11 @@ export default function PlanPage() {
     try {
       const items = lines
         .filter((l) => l.subCategoryId !== null)
-        .map((l) => ({ subCategoryId: l.subCategoryId!, amount: plannedOf(values[l.subCategoryId!]) ?? 0 }))
+        .map((l) => ({
+          subCategoryId: l.subCategoryId!,
+          amount: plannedOf(values[l.subCategoryId!]) ?? 0,
+          accountId: lineAccounts[l.subCategoryId!] ?? null,
+        }))
         .filter((i) => i.amount > 0)
       load(await api.budget.save(year, month, items))
       toast(`Previsão de ${MONTHS[month - 1].toLowerCase()} guardada.`)
@@ -133,8 +184,14 @@ export default function PlanPage() {
       }
       const next = { ...values }
       for (const key of Object.keys(next)) next[Number(key)] = ''
-      for (const i of items) if (i.subCategoryId in next) next[i.subCategoryId] = amountToInput(i.amount)
+      const nextAccounts = { ...lineAccounts }
+      for (const i of items) {
+        if (!(i.subCategoryId in next)) continue
+        next[i.subCategoryId] = amountToInput(i.amount)
+        if (i.accountId) nextAccounts[i.subCategoryId] = i.accountId
+      }
       setValues(next)
+      setLineAccounts(nextAccounts)
       toast('Valores preenchidos. Reveja e carregue em Guardar.')
     } catch (e) {
       toast((e as Error).message, 'error')
@@ -159,8 +216,8 @@ export default function PlanPage() {
     return (
       <>
         <tr>
-          <td colSpan={5} className={cx('px-3 py-1.5 text-sm font-bold tracking-wider text-white', isIncome ? 'bg-inc' : 'bg-exp')}>
-            {isIncome ? 'RENDA' : 'DESPESAS'}
+          <td colSpan={6} className={cx('px-3 py-1.5 text-sm font-bold tracking-wider text-white', isIncome ? 'bg-inc' : 'bg-exp')}>
+            {isIncome ? 'RECEITA' : 'DESPESAS'}
           </td>
         </tr>
         {groups.map((g) => {
@@ -174,6 +231,7 @@ export default function PlanPage() {
                 </span>
               </td>
               <Num v={gPlanned} strong />
+              <td />
               <Num v={g.actual} strong />
               <Diff type={type} planned={gPlanned} actual={g.actual} strong open={open} />
               <td className="px-3">
@@ -215,6 +273,24 @@ export default function PlanPage() {
                     />
                   )}
                 </td>
+                <td className="px-1 py-0.5">
+                  {l.subCategoryId !== null && (
+                    <select
+                      className={cx('input h-7 px-1.5 text-xs', accountChanged(l) && 'bg-[#fff8db] dark:bg-[#2d2a17]')}
+                      aria-label={`Conta de ${l.name}`}
+                      value={lineAccounts[l.subCategoryId] ?? ''}
+                      onChange={(e) => setLineAccounts({ ...lineAccounts, [l.subCategoryId!]: Number(e.target.value) })}
+                    >
+                      {accounts
+                        .filter((a) => a.isActive || a.id === lineAccounts[l.subCategoryId!])
+                        .map((a) => (
+                          <option key={a.id} value={a.id}>
+                            {a.name}
+                          </option>
+                        ))}
+                    </select>
+                  )}
+                </td>
                 <td
                   className={cx('px-3 py-1 text-right tabular', l.actual !== 0 && 'cursor-pointer hover:underline')}
                   onClick={l.actual !== 0 ? () => drill(l) : undefined}
@@ -231,8 +307,9 @@ export default function PlanPage() {
           ]
         })}
         <tr className={cx('font-semibold', isIncome ? 'bg-tot' : 'bg-exp-total')}>
-          <td className="px-3 py-1.5">TOTAL {isIncome ? 'RENDA' : 'DESPESAS'}</td>
+          <td className="px-3 py-1.5">TOTAL {isIncome ? 'RECEITA' : 'DESPESAS'}</td>
           <Num v={t.planned} strong />
+          <td />
           <Num v={t.actual} strong />
           <Diff type={type} planned={t.planned} actual={t.actual} strong plain open={open} />
           <td className="px-3">
@@ -240,7 +317,7 @@ export default function PlanPage() {
           </td>
         </tr>
         <tr aria-hidden="true">
-          <td colSpan={5} className="h-4" />
+          <td colSpan={6} className="h-4" />
         </tr>
       </>
     )
@@ -282,8 +359,8 @@ export default function PlanPage() {
 
       {data && totals && (
         <>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <Card label="Renda" hint="previsto → real">
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+            <Card label="Receita" hint="previsto → real">
               <Pair planned={totals.income.planned} actual={totals.income.actual} />
               <Progress type="Income" planned={totals.income.planned} actual={totals.income.actual} wide />
             </Card>
@@ -291,12 +368,15 @@ export default function PlanPage() {
               <Pair planned={totals.expense.planned} actual={totals.expense.actual} />
               <Progress type="Expense" planned={totals.expense.planned} actual={totals.expense.actual} wide />
             </Card>
+            <Card label="Receita − despesa" hint="previsto → real">
+              <Pair
+                planned={totals.income.planned - totals.expense.planned}
+                actual={totals.income.actual - totals.expense.actual}
+                signed
+              />
+            </Card>
             <Card label="Saldo final previsto" hint={prev === null ? 'sem saldo (antes da data de início)' : `a partir do saldo anterior de ${formatMoney(prev)}`}>
               <Big v={plannedEnd} />
-              <div className="text-xs text-muted">
-                saldo do mês previsto{' '}
-                <span className="tabular">{formatMoney(totals.income.planned - totals.expense.planned)}</span>
-              </div>
             </Card>
             <Card
               label={data.status === 'past' ? 'Saldo final real' : 'Projeção para o fim do mês'}
@@ -319,6 +399,72 @@ export default function PlanPage() {
               )}
             </Card>
           </div>
+
+          {perAccount.length > 1 && (
+            <div className="card overflow-x-auto">
+              <table className="w-full min-w-[880px] text-sm">
+                <thead className="bg-bg text-xs tracking-wide text-muted uppercase">
+                  <tr>
+                    <th className="px-4 py-2 text-left font-medium">Por conta</th>
+                    <th className="px-3 py-2 text-right font-medium">Saldo anterior</th>
+                    <th className="px-3 py-2 text-right font-medium" title="Previsto nas linhas desta conta · por baixo, o real">
+                      Receita
+                    </th>
+                    <th className="px-3 py-2 text-right font-medium" title="Previsto nas linhas desta conta · por baixo, o real">
+                      Despesa
+                    </th>
+                    <th className="px-3 py-2 text-right font-medium" title="Previsto · por baixo, o real">
+                      Receita − despesa
+                    </th>
+                    <th className="px-3 py-2 text-right font-medium">Saldo final previsto</th>
+                    <th
+                      className="px-3 py-2 text-right font-medium"
+                      title="Saldo anterior + o que já entrou/saiu da conta + o que está previsto e ainda não aconteceu"
+                    >
+                      {data.status === 'past' ? 'Saldo final real' : 'Projeção fim do mês'}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {perAccount.map((a) => (
+                    <tr key={a.id} className="border-t border-line">
+                      <td className="px-4 py-1.5">
+                        <span className="inline-flex items-center gap-2 font-medium">
+                          {a.kind === 'MealCard' ? (
+                            <Icon name="card" size={13} className="text-[#b8a444]" />
+                          ) : (
+                            <span className="size-2 rounded-full" style={{ background: a.color ?? 'var(--muted)' }} />
+                          )}
+                          {a.name}
+                        </span>
+                      </td>
+                      <td className="px-3 py-1.5 text-right text-muted tabular">
+                        {a.previousBalance === null ? '—' : formatMoney(a.previousBalance)}
+                      </td>
+                      <PlanActual planned={a.plannedIncome} actual={a.actualIncome} />
+                      <PlanActual planned={a.plannedExpense} actual={a.actualExpense} expense />
+                      <PlanActual planned={a.plannedNet} actual={a.actualNet} signed />
+                      <td className={cx('px-3 py-1.5 text-right font-medium tabular', (a.plannedEnd ?? 0) < 0 && 'text-neg')}>
+                        {a.plannedEnd === null ? '—' : formatMoney(a.plannedEnd)}
+                      </td>
+                      <td className={cx('px-3 py-1.5 text-right font-semibold tabular', (a.projectedEnd ?? 0) < 0 && 'text-neg')}>
+                        {a.projectedEnd === null ? '—' : formatMoney(a.projectedEnd)}
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="border-t-2 border-line bg-bg font-semibold">
+                    <td className="px-4 py-1.5">Total</td>
+                    <td className="px-3 py-1.5 text-right tabular">{anyBalance ? formatMoney(sumOf((a) => a.previousBalance)) : '—'}</td>
+                    <PlanActual planned={sumOf((a) => a.plannedIncome)} actual={sumOf((a) => a.actualIncome)} />
+                    <PlanActual planned={sumOf((a) => a.plannedExpense)} actual={sumOf((a) => a.actualExpense)} expense />
+                    <PlanActual planned={sumOf((a) => a.plannedNet)} actual={sumOf((a) => a.actualNet)} signed />
+                    <td className="px-3 py-1.5 text-right tabular">{anyBalance ? formatMoney(sumOf((a) => a.plannedEnd)) : '—'}</td>
+                    <td className="px-3 py-1.5 text-right tabular">{anyBalance ? formatMoney(sumOf((a) => a.projectedEnd)) : '—'}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
 
           <div className="card flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
             <span className="text-xs font-medium tracking-wide text-muted uppercase">Preencher com</span>
@@ -350,7 +496,7 @@ export default function PlanPage() {
           )}
 
           <div className="card overflow-x-auto">
-            <table className="w-full min-w-[640px] border-separate border-spacing-0 text-[13px]">
+            <table className="w-full min-w-[760px] border-separate border-spacing-0 text-[13px]">
               <thead className="text-xs tracking-wide text-muted uppercase">
                 <tr>
                   <th className="px-3 py-2 text-left font-medium normal-case">
@@ -360,8 +506,9 @@ export default function PlanPage() {
                     </label>
                   </th>
                   <th className="w-32 px-3 py-2 text-right font-medium">Previsto</th>
+                  <th className="w-32 px-2 py-2 text-left font-medium">Conta</th>
                   <th className="w-28 px-3 py-2 text-right font-medium">Real</th>
-                  <th className="w-28 px-3 py-2 text-right font-medium" title="Renda: real − previsto · Despesas: previsto − real">
+                  <th className="w-28 px-3 py-2 text-right font-medium" title="Receita: real − previsto · Despesas: previsto − real">
                     Diferença
                   </th>
                   <th className="w-40 px-3 py-2 text-left font-medium">Execução</th>
@@ -391,13 +538,33 @@ function Card({ label, hint, children }: { label: string; hint?: string; childre
   )
 }
 
-function Pair({ planned, actual }: { planned: number; actual: number }) {
+function Pair({ planned, actual, signed }: { planned: number; actual: number; signed?: boolean }) {
   return (
     <div className="flex items-baseline gap-1.5 tabular">
       <span className="text-sm text-muted">{formatMoney(planned)}</span>
       <Icon name="right" size={12} className="text-muted" />
-      <span className="text-xl font-semibold tracking-tight">{formatMoney(actual)}</span>
+      <span className={cx('text-xl font-semibold tracking-tight', signed && actual < 0 && 'text-neg', signed && actual > 0 && 'text-pos')}>
+        {formatMoney(actual)}
+      </span>
     </div>
+  )
+}
+
+/** Table cell with the planned value on top and the actual one underneath. */
+function PlanActual({ planned, actual, expense, signed }: { planned: number; actual: number; expense?: boolean; signed?: boolean }) {
+  const fmt = (v: number) => (signed ? `${v > 0 ? '+' : v < 0 ? '−' : ''}${formatMoney(Math.abs(v))}` : formatMoney(v))
+  const over = expense && planned > 0 && actual > planned
+  return (
+    <td className="px-3 py-1 text-right leading-tight tabular">
+      <div className={cx(signed && planned < 0 && 'text-neg', signed && planned > 0 && 'text-pos')}>
+        {planned === 0 && actual === 0 ? <span className="text-cell-muted">–</span> : fmt(planned)}
+      </div>
+      {(planned !== 0 || actual !== 0) && (
+        <div className={cx('text-[11px] font-normal', over ? 'text-neg' : 'text-muted')} title="Real">
+          real {fmt(actual)}
+        </div>
+      )}
+    </td>
   )
 }
 

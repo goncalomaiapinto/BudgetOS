@@ -3,13 +3,11 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Icon } from '../components/Icon'
 import { PeriodNav } from '../components/PeriodNav'
 import {
-  ACCOUNT_LABELS,
   api,
   type EntryType,
   type GridCategory,
   type GridSection,
   type MonthlyGrid,
-  type PaymentAccount,
 } from '../lib/api'
 import { useApp } from '../lib/app-context'
 import { cx, daysInMonth, formatNumber, MONTHS_SHORT, toIso } from '../lib/format'
@@ -173,12 +171,12 @@ function SectionHeader({ label, color, span }: { label: string; color: string; s
 }
 
 export default function BudgetPage() {
-  const { version, openTransaction } = useApp()
+  const { version, openTransaction, accounts } = useApp()
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
   const today = new Date()
   const year = Number(params.get('y')) || today.getFullYear()
-  const account = (params.get('acc') as PaymentAccount) || undefined
+  const account = Number(params.get('acc')) || undefined
   const [grid, setGrid] = useState<MonthlyGrid | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(loadCollapsed)
@@ -198,10 +196,10 @@ export default function BudgetPage() {
     }
   }, [year, account, version])
 
-  const setFilter = (y: number, acc: PaymentAccount | undefined) => {
+  const setFilter = (y: number, acc: number | undefined) => {
     const next: Record<string, string> = {}
     if (y !== today.getFullYear()) next.y = String(y)
-    if (acc) next.acc = acc
+    if (acc) next.acc = String(acc)
     setParams(next, { replace: true })
   }
   const setYear = (y: number) => setFilter(y, account)
@@ -226,14 +224,14 @@ export default function BudgetPage() {
   // The average only counts the months shown up to today (hidden empty months don't drag it down).
   const monthsForAverage = Math.max(1, visible.filter((m) => !isFuture(m)).length)
 
-  const drill = (q: { type?: EntryType; cat?: number; sub?: number | null; month?: number }) => {
+  const drill = (q: { type?: EntryType | 'Transfer'; cat?: number; sub?: number | null; month?: number }) => {
     const s = new URLSearchParams({ y: String(year) })
     if (q.month) s.set('m', String(q.month))
     else s.set('period', 'year')
     if (q.type) s.set('type', q.type)
     if (q.cat) s.set('cat', String(q.cat))
     if (q.sub) s.set('sub', String(q.sub))
-    if (account) s.set('acc', account)
+    if (account) s.set('acc', String(account))
     navigate(`/transacoes?${s}`)
   }
 
@@ -245,7 +243,7 @@ export default function BudgetPage() {
     const isNow = year === now.getFullYear() && m === now.getMonth() + 1
     const isPast = year < now.getFullYear() || (year === now.getFullYear() && m < now.getMonth() + 1)
     const day = isNow ? now.getDate() : isPast ? daysInMonth(year, m) : 1
-    openTransaction(undefined, { type, categoryId, subCategoryId, date: toIso(year, m, day), account: acc })
+    openTransaction(undefined, { type, categoryId, subCategoryId, date: toIso(year, m, day), accountId: acc })
   }
   const avg = (total: number) => total / monthsForAverage
 
@@ -316,7 +314,7 @@ export default function BudgetPage() {
     ]
   }
 
-  // Income line used to top up the meal card ("Renda › Cartão Refeição"), if it exists.
+  // Income line used to top up the meal card ("Receitas › Cartão Refeição"), if it exists.
   const mealTopUp = grid?.income.categories
     .flatMap((c) => c.rows.map((r) => ({ categoryId: c.id, subCategoryId: r.subCategoryId, name: r.name })))
     .find((r) => r.subCategoryId !== null && r.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().includes('cartao refeicao'))
@@ -336,20 +334,24 @@ export default function BudgetPage() {
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <div className="inline-flex rounded-lg border border-line bg-surface p-0.5 text-xs font-medium" role="radiogroup" aria-label="Conta">
-            {([undefined, 'Main', 'MealCard'] as const).map((a) => (
+            {[undefined, ...accounts.filter((a) => a.isActive || a.id === account)].map((a) => (
               <button
-                key={a ?? 'all'}
+                key={a?.id ?? 'all'}
                 type="button"
                 role="radio"
-                aria-checked={account === a}
-                onClick={() => setFilter(year, a)}
+                aria-checked={account === a?.id}
+                onClick={() => setFilter(year, a?.id)}
                 className={cx(
-                  'inline-flex h-7 cursor-pointer items-center gap-1 rounded-md px-2.5 transition-colors',
-                  account === a ? 'bg-inc text-white' : 'text-muted hover:text-fg',
+                  'inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2.5 transition-colors',
+                  account === a?.id ? 'bg-inc text-white' : 'text-muted hover:text-fg',
                 )}
               >
-                {a === 'MealCard' && <Icon name="card" size={13} />}
-                {a ? ACCOUNT_LABELS[a] : 'Todas as contas'}
+                {a?.kind === 'MealCard' ? (
+                  <Icon name="card" size={13} />
+                ) : (
+                  a && <span className="size-2 rounded-full" style={{ background: a.color ?? 'var(--muted)' }} />
+                )}
+                {a ? a.name : 'Todas as contas'}
               </button>
             ))}
           </div>
@@ -395,7 +397,7 @@ export default function BudgetPage() {
               </tr>
             </thead>
             <tbody>
-              <SectionHeader label="RENDA" color="bg-inc" span={span} />
+              <SectionHeader label="RECEITA" color="bg-inc" span={span} />
               <Row
                 cols={cols}
                 kind="item"
@@ -408,34 +410,34 @@ export default function BudgetPage() {
                 months={grid.previousBalance}
                 signed
               />
-              {/* With "Todas as contas", show how the Saldo Anterior splits between the account and the meal card.
-                  Double-click adds income to that account (for the card: a top-up in "Renda › Cartão Refeição"). */}
-              {grid.previousBalanceMain &&
-                grid.previousBalanceMealCard?.some((v) => v !== null && v !== 0) &&
-                ([
-                  ['Main', grid.previousBalanceMain, 'na conta à ordem'],
-                  ['MealCard', grid.previousBalanceMealCard, 'no cartão refeição'],
-                ] as const).map(([acc, values, text]) => (
+              {/* With "Todas as contas", the Saldo Anterior split per account. Double-click adds income to that account
+                  (for the meal card: a top-up in "Receitas › Cartão Refeição"). */}
+              {(grid.previousBalanceByAccount?.length ?? 0) > 1 &&
+                grid.previousBalanceByAccount!.map((a) => (
                   <Row
-                    key={acc}
+                    key={`acc-${a.accountId}`}
                     cols={cols}
                     kind="item"
                     labelExtra="bg-inc-row"
                     label={
                       <span
-                        className="inline-flex items-center gap-1 pl-4 text-xs text-muted italic"
-                        title={`Parte do Saldo Anterior que está ${text}`}
+                        className="inline-flex items-center gap-1.5 pl-4 text-xs text-muted italic"
+                        title={`Parte do Saldo Anterior que está em ${a.name}`}
                       >
-                        ↳ {text}
-                        {acc === 'MealCard' && <Icon name="card" size={12} />}
+                        ↳ saldo {a.name}
+                        {a.kind === 'MealCard' ? (
+                          <Icon name="card" size={12} />
+                        ) : (
+                          <span className="size-1.5 rounded-full" style={{ background: a.color ?? 'var(--muted)' }} />
+                        )}
                       </span>
                     }
-                    months={values}
+                    months={a.values}
                     signed
                     onAdd={
-                      acc === 'MealCard' && mealTopUp
-                        ? addFor('Income', mealTopUp.categoryId, mealTopUp.subCategoryId, 'MealCard')
-                        : addFor('Income', undefined, undefined, acc)
+                      a.kind === 'MealCard' && mealTopUp
+                        ? addFor('Income', mealTopUp.categoryId, mealTopUp.subCategoryId, a.accountId)
+                        : addFor('Income', undefined, undefined, a.accountId)
                     }
                   />
                 ))}
@@ -470,6 +472,22 @@ export default function BudgetPage() {
                 <td colSpan={span} className="h-4 border-b-2 border-line bg-surface" />
               </tr>
 
+              {/* With an account filter, that account's transfers (in − out): part of its balance, not income/expense. */}
+              {grid.transfers?.some((v) => v !== 0) && (
+                <Row
+                  cols={cols}
+                  kind="balance"
+                  label={
+                    <span className="inline-flex items-center gap-1.5" title="Entradas − saídas por transferência entre contas">
+                      <Icon name="swap" size={13} /> Transferências
+                    </span>
+                  }
+                  months={grid.transfers}
+                  total={grid.transfers.reduce((a, b) => a + b, 0)}
+                  signed
+                  onCell={(m) => drill({ type: 'Transfer', month: m })}
+                />
+              )}
               <Row
                 cols={cols}
                 kind="balance"

@@ -4,11 +4,10 @@ import { ConfirmDialog } from '../components/ConfirmDialog'
 import { Icon } from '../components/Icon'
 import { PeriodNav, monthLabel } from '../components/PeriodNav'
 import {
-  ACCOUNT_LABELS,
   api,
   type EntryType,
-  type PaymentAccount,
   type Transaction,
+  type Transfer,
   type TransactionFilter,
   type TransactionPage,
 } from '../lib/api'
@@ -20,17 +19,17 @@ const PAGE_SIZE = 100
 
 /** Filters live in the URL so the budget grid can deep-link here (drill-down). */
 export default function TransactionsPage() {
-  const { categories, version, openTransaction, refresh, toast } = useApp()
+  const { categories, accounts, version, openTransaction, openTransfer, refresh, toast } = useApp()
   const [params, setParams] = useSearchParams()
   const now = new Date()
 
   const period = (params.get('period') as Period) || 'month'
   const year = Number(params.get('y')) || now.getFullYear()
   const month = Number(params.get('m')) || now.getMonth() + 1
-  const type = (params.get('type') as EntryType) || ''
+  const type = (params.get('type') ?? '') as EntryType | 'Transfer' | ''
   const categoryId = Number(params.get('cat')) || ''
   const subCategoryId = Number(params.get('sub')) || ''
-  const account = (params.get('acc') as PaymentAccount) || ''
+  const accountId = Number(params.get('acc')) || ''
   const search = params.get('q') ?? ''
   const page = Number(params.get('page')) || 1
 
@@ -38,6 +37,10 @@ export default function TransactionsPage() {
   const [data, setData] = useState<TransactionPage | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [toDelete, setToDelete] = useState<Transaction | null>(null)
+  const [transfers, setTransfers] = useState<Transfer[]>([])
+  const [transferToDelete, setTransferToDelete] = useState<Transfer | null>(null)
+  // Transfers have no category: they only show when no category filter is active (and on the first page).
+  const showTransfers = (type === '' || type === 'Transfer') && !categoryId && !subCategoryId && page === 1
 
   const update = (changes: Record<string, string | number | null>) => {
     const next = new URLSearchParams(params)
@@ -61,32 +64,48 @@ export default function TransactionsPage() {
     const f: TransactionFilter = { page, pageSize: PAGE_SIZE }
     if (period === 'month') Object.assign(f, monthRange(year, month))
     if (period === 'year') Object.assign(f, { from: toIso(year, 1, 1), to: toIso(year, 12, 31) })
-    if (type) f.type = type
+    if (type && type !== 'Transfer') f.type = type
     if (categoryId) f.categoryId = categoryId
     if (subCategoryId) f.subCategoryId = subCategoryId
-    if (account) f.account = account
+    if (accountId) f.accountId = accountId
     if (search) f.search = search
     return f
-  }, [period, year, month, type, categoryId, subCategoryId, account, search, page])
+  }, [period, year, month, type, categoryId, subCategoryId, accountId, search, page])
 
   useEffect(() => {
     let cancelled = false
-    api.transactions
-      .list(filter)
-      .then((d) => {
+    const empty: TransactionPage = { items: [], totalCount: 0, page: 1, pageSize: PAGE_SIZE, totals: { income: 0, expense: 0, net: 0 } }
+    Promise.all([
+      type === 'Transfer' ? Promise.resolve(empty) : api.transactions.list(filter),
+      showTransfers
+        ? api.transfers.list({ from: filter.from, to: filter.to, accountId: filter.accountId, search: filter.search })
+        : Promise.resolve([]),
+    ])
+      .then(([d, t]) => {
         if (cancelled) return
         setData(d)
+        setTransfers(t)
         setError(null)
       })
       .catch((e: Error) => !cancelled && setError(e.message))
     return () => {
       cancelled = true
     }
-  }, [filter, version])
+  }, [filter, version, type, showTransfers])
 
-  const categoryOptions = categories.filter((c) => !type || c.type === type)
+  // Transactions and transfers in one list, newest first.
+  type Row = { kind: 'tx'; date: string; id: number; t: Transaction } | { kind: 'tr'; date: string; id: number; t: Transfer }
+  const rows: Row[] = [
+    ...(data?.items ?? []).map((t) => ({ kind: 'tx' as const, date: t.date, id: t.id, t })),
+    ...transfers.map((t) => ({ kind: 'tr' as const, date: t.date, id: t.id, t })),
+  ].sort((a, b) => (a.date === b.date ? b.id - a.id : a.date < b.date ? 1 : -1))
+  // With an account filter, a transfer is money in (+) or out (−) of that account.
+  const transferSign = (t: Transfer) => (accountId ? (t.toAccountId === accountId ? 1 : -1) : 0)
+  const transfersNet = transfers.reduce((sum, t) => sum + transferSign(t) * t.amount, 0)
+
+  const categoryOptions = type === 'Transfer' ? [] : categories.filter((c) => !type || c.type === type)
   const selectedCategory = categories.find((c) => c.id === categoryId)
-  const hasFilters = type || categoryId || subCategoryId || account || search
+  const hasFilters = type || categoryId || subCategoryId || accountId || search
 
   const move = (delta: number) => {
     if (period === 'month') {
@@ -98,6 +117,82 @@ export default function TransactionsPage() {
   }
 
   const pages = data ? Math.max(1, Math.ceil(data.totalCount / PAGE_SIZE)) : 1
+
+  const renderTx = (t: Transaction) => (
+    <tr
+      key={t.id}
+      className="group cursor-pointer border-b border-line last:border-0 hover:bg-fg/[0.03]"
+      onClick={() => openTransaction(t)}
+    >
+      <td className="px-3 py-2 whitespace-nowrap tabular">{formatDate(t.date)}</td>
+      <td className="px-3 py-2">
+        <span
+          className={cx(
+            'rounded px-1.5 py-0.5 text-xs font-medium',
+            t.type === 'Income' ? 'bg-inc-row text-inc dark:text-[#9fc0ea]' : 'bg-exp-row text-neg',
+          )}
+        >
+          {t.type === 'Income' ? 'Receita' : 'Despesa'}
+        </span>
+      </td>
+      <td className="px-3 py-2 whitespace-nowrap">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="size-2 rounded-full" style={{ background: t.categoryColor ?? '#999' }} />
+          {t.categoryName}
+        </span>
+      </td>
+      <td className="px-3 py-2 whitespace-nowrap text-muted">{t.subCategoryName ?? '—'}</td>
+      <td className="px-3 py-2 whitespace-nowrap">
+        <span className="inline-flex items-center gap-1.5 text-xs">
+          {t.accountKind === 'MealCard' ? (
+            <Icon name="card" size={13} className="text-[#b8a444]" />
+          ) : (
+            <span className="size-2 rounded-full" style={{ background: t.accountColor ?? 'var(--muted)' }} />
+          )}
+          {t.accountName}
+        </span>
+      </td>
+      <td className="max-w-72 truncate px-3 py-2" title={t.description ?? ''}>
+        {t.description}
+      </td>
+      <td
+        className={cx(
+          'px-3 py-2 text-right font-medium whitespace-nowrap tabular',
+          t.type === 'Income' ? 'text-pos' : 'text-neg',
+        )}
+      >
+        {t.type === 'Income' ? '+' : '−'}
+        {formatMoney(t.amount)}
+      </td>
+      <td className="px-2 py-1 text-right whitespace-nowrap">
+        <span className="opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="Editar"
+            onClick={(e) => {
+              e.stopPropagation()
+              openTransaction(t)
+            }}
+          >
+            <Icon name="edit" />
+          </button>
+          <button
+            type="button"
+            className="icon-btn hover:text-neg"
+            aria-label="Remover"
+            onClick={(e) => {
+              e.stopPropagation()
+              setToDelete(t)
+            }}
+          >
+            <Icon name="trash" />
+          </button>
+        </span>
+      </td>
+    </tr>
+  )
+
 
   return (
     <div className="mx-auto max-w-6xl space-y-4">
@@ -134,8 +229,9 @@ export default function TransactionsPage() {
             onChange={(e) => update({ type: e.target.value || null, cat: null, sub: null })}
           >
             <option value="">Todos</option>
-            <option value="Income">Renda</option>
+            <option value="Income">Receita</option>
             <option value="Expense">Despesa</option>
+            <option value="Transfer">Transferência</option>
           </select>
         </div>
         <div className="w-44">
@@ -143,6 +239,7 @@ export default function TransactionsPage() {
           <select
             className="input"
             value={categoryId}
+            disabled={type === 'Transfer'}
             onChange={(e) => update({ cat: e.target.value || null, sub: null })}
           >
             <option value="">Todas</option>
@@ -171,10 +268,14 @@ export default function TransactionsPage() {
         </div>
         <div className="w-40">
           <label className="label">Conta</label>
-          <select className="input" value={account} onChange={(e) => update({ acc: e.target.value || null })}>
+          <select className="input" value={accountId} onChange={(e) => update({ acc: e.target.value || null })}>
             <option value="">Todas</option>
-            <option value="Main">{ACCOUNT_LABELS.Main}</option>
-            <option value="MealCard">{ACCOUNT_LABELS.MealCard}</option>
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+                {!a.isActive ? ' (inativa)' : ''}
+              </option>
+            ))}
           </select>
         </div>
         <div className="min-w-48 flex-1">
@@ -214,84 +315,29 @@ export default function TransactionsPage() {
                 <th className="px-3 py-2 font-medium">Tipo</th>
                 <th className="px-3 py-2 font-medium">Categoria</th>
                 <th className="px-3 py-2 font-medium">Subcategoria</th>
+                <th className="px-3 py-2 font-medium">Conta</th>
                 <th className="px-3 py-2 font-medium">Descrição</th>
                 <th className="px-3 py-2 text-right font-medium">Valor</th>
                 <th className="w-20 px-3 py-2" />
               </tr>
             </thead>
             <tbody>
-              {data?.items.map((t) => (
-                <tr
-                  key={t.id}
-                  className="group cursor-pointer border-b border-line last:border-0 hover:bg-fg/[0.03]"
-                  onClick={() => openTransaction(t)}
-                >
-                  <td className="px-3 py-2 whitespace-nowrap tabular">{formatDate(t.date)}</td>
-                  <td className="px-3 py-2">
-                    <span
-                      className={cx(
-                        'rounded px-1.5 py-0.5 text-xs font-medium',
-                        t.type === 'Income' ? 'bg-inc-row text-inc dark:text-[#9fc0ea]' : 'bg-exp-row text-neg',
-                      )}
-                    >
-                      {t.type === 'Income' ? 'Renda' : 'Despesa'}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 whitespace-nowrap">
-                    <span className="inline-flex items-center gap-1.5">
-                      <span className="size-2 rounded-full" style={{ background: t.categoryColor ?? '#999' }} />
-                      {t.categoryName}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 whitespace-nowrap text-muted">{t.subCategoryName ?? '—'}</td>
-                  <td className="max-w-72 truncate px-3 py-2" title={t.description ?? ''}>
-                    {t.description}
-                  </td>
-                  <td
-                    className={cx(
-                      'px-3 py-2 text-right font-medium whitespace-nowrap tabular',
-                      t.type === 'Income' ? 'text-pos' : 'text-neg',
-                    )}
-                  >
-                    {t.account === 'MealCard' && (
-                      <span title={ACCOUNT_LABELS.MealCard} className="mr-1.5 inline-block align-[-2px] text-[#b8a444]">
-                        <Icon name="card" size={14} />
-                      </span>
-                    )}
-                    {t.type === 'Income' ? '+' : '−'}
-                    {formatMoney(t.amount)}
-                  </td>
-                  <td className="px-2 py-1 text-right whitespace-nowrap">
-                    <span className="opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                      <button
-                        type="button"
-                        className="icon-btn"
-                        aria-label="Editar"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          openTransaction(t)
-                        }}
-                      >
-                        <Icon name="edit" />
-                      </button>
-                      <button
-                        type="button"
-                        className="icon-btn hover:text-neg"
-                        aria-label="Remover"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          setToDelete(t)
-                        }}
-                      >
-                        <Icon name="trash" />
-                      </button>
-                    </span>
-                  </td>
-                </tr>
-              ))}
-              {data && data.items.length === 0 && (
+              {rows.map((row) =>
+                row.kind === 'tr' ? (
+                  <TransferRow
+                    key={`tr${row.id}`}
+                    t={row.t}
+                    sign={transferSign(row.t)}
+                    onOpen={() => openTransfer(row.t)}
+                    onDelete={() => setTransferToDelete(row.t)}
+                  />
+                ) : (
+                  renderTx(row.t)
+                ),
+              )}
+              {data && rows.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-3 py-10 text-center text-muted">
+                  <td colSpan={8} className="px-3 py-10 text-center text-muted">
                     Sem transações para este filtro.{' '}
                     <button type="button" className="text-inc underline" onClick={() => openTransaction()}>
                       Adicionar uma
@@ -300,13 +346,29 @@ export default function TransactionsPage() {
                 </tr>
               )}
             </tbody>
-            {data && data.totalCount > 0 && (
+            {data && rows.length > 0 && (
               <tfoot className="border-t-2 border-line bg-bg text-sm">
                 <tr>
-                  <td colSpan={7} className="px-3 py-2.5">
+                  <td colSpan={8} className="px-3 py-2.5">
                     <div className="flex flex-wrap items-center justify-end gap-x-6 gap-y-1">
                       <span className="mr-auto text-muted">
-                        {data.totalCount} transaç{data.totalCount === 1 ? 'ão' : 'ões'}
+                        {type !== 'Transfer' && <>{data.totalCount} transaç{data.totalCount === 1 ? 'ão' : 'ões'}</>}
+                        {transfers.length > 0 && (
+                          <>
+                            {type !== 'Transfer' && ' · '}
+                            {transfers.length} transferência{transfers.length === 1 ? '' : 's'}
+                            {accountId !== '' && (
+                              <>
+                                {' '}
+                                (<span className={cx('tabular', transfersNet > 0 && 'text-pos', transfersNet < 0 && 'text-neg')}>
+                                  {transfersNet > 0 ? '+' : transfersNet < 0 ? '−' : ''}
+                                  {formatMoney(Math.abs(transfersNet))}
+                                </span>
+                                )
+                              </>
+                            )}
+                          </>
+                        )}
                       </span>
                       <span>
                         Receitas <strong className="text-pos tabular">{formatMoney(data.totals.income)}</strong>
@@ -348,13 +410,37 @@ export default function TransactionsPage() {
         </div>
       )}
 
+      {transferToDelete && (
+        <ConfirmDialog
+          title="Remover transferência"
+          confirmLabel="Remover"
+          message={
+            <>
+              Remover a transferência de <strong>{formatMoney(transferToDelete.amount)}</strong> de{' '}
+              {formatDate(transferToDelete.date)} ({transferToDelete.fromAccountName} → {transferToDelete.toAccountName})?
+            </>
+          }
+          onClose={() => setTransferToDelete(null)}
+          onConfirm={async () => {
+            try {
+              await api.transfers.remove(transferToDelete.id)
+              toast('Transferência removida.')
+              refresh()
+            } catch (e) {
+              toast((e as Error).message, 'error')
+            }
+            setTransferToDelete(null)
+          }}
+        />
+      )}
+
       {toDelete && (
         <ConfirmDialog
           title="Remover transação"
           confirmLabel="Remover"
           message={
             <>
-              Remover a {toDelete.type === 'Income' ? 'renda' : 'despesa'} de{' '}
+              Remover a {toDelete.type === 'Income' ? 'receita' : 'despesa'} de{' '}
               <strong>{formatMoney(toDelete.amount)}</strong> de {formatDate(toDelete.date)} (
               {toDelete.subCategoryName ?? toDelete.categoryName})?
               {toDelete.description && <div className="mt-1 text-muted">“{toDelete.description}”</div>}
@@ -374,5 +460,77 @@ export default function TransactionsPage() {
         />
       )}
     </div>
+  )
+}
+
+function AccountDot({ kind, color }: { kind: string; color: string | null }) {
+  return kind === 'MealCard' ? (
+    <Icon name="card" size={13} className="text-[#b8a444]" />
+  ) : (
+    <span className="size-2 rounded-full" style={{ background: color ?? 'var(--muted)' }} />
+  )
+}
+
+/** A transfer in the transactions list: "Millennium → Revolut", neutral unless an account filter gives it a sign. */
+function TransferRow({ t, sign, onOpen, onDelete }: { t: Transfer; sign: number; onOpen: () => void; onDelete: () => void }) {
+  return (
+    <tr className="group cursor-pointer border-b border-line last:border-0 hover:bg-fg/[0.03]" onClick={onOpen}>
+      <td className="px-3 py-2 whitespace-nowrap tabular">{formatDate(t.date)}</td>
+      <td className="px-3 py-2">
+        <span className="inline-flex items-center gap-1 rounded bg-fg/10 px-1.5 py-0.5 text-xs font-medium">
+          <Icon name="swap" size={12} /> Transferência
+        </span>
+      </td>
+      <td className="px-3 py-2 text-muted">—</td>
+      <td className="px-3 py-2 text-muted">—</td>
+      <td className="px-3 py-2 whitespace-nowrap">
+        <span className="inline-flex items-center gap-1.5 text-xs">
+          <AccountDot kind={t.fromAccountKind} color={t.fromAccountColor} />
+          {t.fromAccountName}
+          <span className="text-muted">→</span>
+          <AccountDot kind={t.toAccountKind} color={t.toAccountColor} />
+          {t.toAccountName}
+        </span>
+      </td>
+      <td className="max-w-72 truncate px-3 py-2" title={t.description ?? ''}>
+        {t.description}
+      </td>
+      <td
+        className={cx(
+          'px-3 py-2 text-right font-medium whitespace-nowrap tabular',
+          sign > 0 && 'text-pos',
+          sign < 0 && 'text-neg',
+        )}
+      >
+        {sign > 0 ? '+' : sign < 0 ? '−' : ''}
+        {formatMoney(t.amount)}
+      </td>
+      <td className="px-2 py-1 text-right whitespace-nowrap">
+        <span className="opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="Editar"
+            onClick={(e) => {
+              e.stopPropagation()
+              onOpen()
+            }}
+          >
+            <Icon name="edit" />
+          </button>
+          <button
+            type="button"
+            className="icon-btn hover:text-neg"
+            aria-label="Remover"
+            onClick={(e) => {
+              e.stopPropagation()
+              onDelete()
+            }}
+          >
+            <Icon name="trash" />
+          </button>
+        </span>
+      </td>
+    </tr>
   )
 }

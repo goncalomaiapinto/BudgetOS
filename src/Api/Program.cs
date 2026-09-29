@@ -67,9 +67,11 @@ app.UseCors();
 var api = app.MapGroup("/api");
 api.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 api.MapTransactionEndpoints();
+api.MapTransferEndpoints();
 api.MapCategoryEndpoints();
 api.MapReportEndpoints();
 api.MapSettingsEndpoints();
+api.MapAccountEndpoints();
 api.MapBudgetEndpoints();
 api.MapHoldingEndpoints();
 

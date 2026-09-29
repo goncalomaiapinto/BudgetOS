@@ -72,7 +72,7 @@ export default function CategoriesPage() {
             isIncome ? 'bg-inc' : 'bg-exp',
           )}
         >
-          <span>{isIncome ? 'RENDA' : 'DESPESAS'}</span>
+          <span>{isIncome ? 'RECEITA' : 'DESPESAS'}</span>
           <button
             type="button"
             className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md bg-white/15 px-2.5 text-xs font-semibold tracking-normal hover:bg-white/25"
@@ -373,7 +373,7 @@ function CategoryDialog({
                   disabled={typeLocked}
                   onChange={() => setType(t)}
                 />
-                {t === 'Income' ? 'Renda' : 'Despesa'}
+                {t === 'Income' ? 'Receita' : 'Despesa'}
               </label>
             ))}
           </div>

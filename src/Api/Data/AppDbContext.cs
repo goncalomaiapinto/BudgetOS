@@ -4,9 +4,11 @@ namespace Api.Data;
 
 public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
 {
+    public DbSet<Account> Accounts => Set<Account>();
     public DbSet<Category> Categories => Set<Category>();
     public DbSet<SubCategory> SubCategories => Set<SubCategory>();
     public DbSet<Transaction> Transactions => Set<Transaction>();
+    public DbSet<Transfer> Transfers => Set<Transfer>();
     public DbSet<AppSetting> AppSettings => Set<AppSetting>();
     public DbSet<BudgetPlan> BudgetPlans => Set<BudgetPlan>();
     public DbSet<Holding> Holdings => Set<Holding>();
@@ -14,6 +16,14 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
     protected override void OnModelCreating(ModelBuilder b)
     {
+        b.Entity<Account>(e =>
+        {
+            e.Property(x => x.Name).HasMaxLength(100).IsRequired();
+            e.Property(x => x.Kind).HasConversion<string>().HasMaxLength(10);
+            e.Property(x => x.Color).HasMaxLength(9);
+            e.Property(x => x.OpeningBalance).HasPrecision(18, 2);
+        });
+
         b.Entity<Category>(e =>
         {
             e.Property(x => x.Name).HasMaxLength(100).IsRequired();
@@ -51,8 +61,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.Property(x => x.Type).HasConversion<string>().HasMaxLength(10);
             e.Property(x => x.Source).HasConversion<string>().HasMaxLength(10)
                 .HasDefaultValue(TransactionSource.Manual).HasSentinel(TransactionSource.Manual);
-            e.Property(x => x.Account).HasConversion<string>().HasMaxLength(10)
-                .HasDefaultValue(PaymentAccount.Main).HasSentinel(PaymentAccount.Main);
+            e.HasOne(x => x.Account).WithMany(x => x.Transactions)
+                .HasForeignKey(x => x.AccountId).OnDelete(DeleteBehavior.Restrict);
+            e.HasIndex(x => new { x.AccountId, x.Date });
             e.Property(x => x.Amount).HasPrecision(18, 2);
             e.Property(x => x.Description).HasMaxLength(500);
             e.Property(x => x.ImportHash).HasMaxLength(128);
@@ -68,9 +79,23 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.HasIndex(x => x.ImportHash).IsUnique().HasFilter("[ImportHash] IS NOT NULL");
         });
 
+        b.Entity<Transfer>(e =>
+        {
+            e.Property(x => x.Amount).HasPrecision(18, 2);
+            e.Property(x => x.Description).HasMaxLength(500);
+            e.HasOne(x => x.FromAccount).WithMany()
+                .HasForeignKey(x => x.FromAccountId).OnDelete(DeleteBehavior.Restrict);
+            e.HasOne(x => x.ToAccount).WithMany()
+                .HasForeignKey(x => x.ToAccountId).OnDelete(DeleteBehavior.Restrict);
+            e.HasIndex(x => x.Date);
+            e.ToTable(t => t.HasCheckConstraint("CK_Transfers_DifferentAccounts", "[FromAccountId] <> [ToAccountId]"));
+        });
+
         b.Entity<BudgetPlan>(e =>
         {
             e.Property(x => x.Amount).HasPrecision(18, 2);
+            e.HasOne(x => x.Account).WithMany()
+                .HasForeignKey(x => x.AccountId).OnDelete(DeleteBehavior.SetNull);
             // A plan belongs to its subcategory: it follows it when moved and goes away when it is deleted.
             e.HasOne(x => x.SubCategory).WithMany()
                 .HasForeignKey(x => x.SubCategoryId).OnDelete(DeleteBehavior.Cascade);

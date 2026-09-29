@@ -118,7 +118,7 @@ export default function App() {
         </main>
       </div>
 
-      {modal.open && <TransactionModal key={modal.transaction?.id ?? 'new'} />}
+      {modal.open && <TransactionModal key={modal.transfer ? `t${modal.transfer.id}` : (modal.transaction?.id ?? 'new')} />}
       <Toasts />
     </div>
   )

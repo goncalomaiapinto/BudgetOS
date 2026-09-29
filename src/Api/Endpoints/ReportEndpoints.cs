@@ -20,8 +20,11 @@ public record MonthlyGrid(
     decimal[] Net,
     decimal?[] EndBalance,
     // Only when no account filter is applied: the "Saldo Anterior" split per account.
-    decimal?[]? PreviousBalanceMain = null,
-    decimal?[]? PreviousBalanceMealCard = null);
+    List<AccountSeries>? PreviousBalanceByAccount = null,
+    // Only with an account filter: net transfers (in − out) of that account per month (already included in Net).
+    decimal[]? Transfers = null);
+
+public record AccountSeries(int AccountId, string Name, AccountKind Kind, string? Color, bool IsActive, decimal?[] Values);
 
 // ---- Dashboard ----
 
@@ -31,12 +34,12 @@ public record CategoryAmount(int CategoryId, string Name, string? Color, decimal
 
 public record SubCategoryAmount(int CategoryId, string CategoryName, string? CategoryColor, int? SubCategoryId, string Name, decimal Amount);
 
-/// <summary>Balance at the end of the selected month, per account (null before the start date).</summary>
-public record AccountBalances(decimal? Main, decimal? MealCard);
+/// <summary>Balance of one account at the end of the selected month (null before the start date).</summary>
+public record AccountBalance(int AccountId, string Name, AccountKind Kind, string? Color, decimal? Balance);
 
 public record Dashboard(
     MonthSummary Current,
-    AccountBalances AccountBalances,
+    List<AccountBalance> AccountBalances,
     decimal Investments, // estimated value of all holdings at the end of the month
 
     MonthSummary Previous,
@@ -54,7 +57,7 @@ public static class ReportEndpoints
         g.MapGet("/dashboard", GetDashboard);
     }
 
-    private static async Task<IResult> GetMonthlyGrid(int? year, PaymentAccount? account, AppDbContext db)
+    private static async Task<IResult> GetMonthlyGrid(int? year, int? accountId, AppDbContext db)
     {
         var y = year ?? DateTime.Today.Year;
         if (y is < 1900 or > 2999) return Problems.Validation("year", "Ano inválido.");
@@ -64,9 +67,9 @@ public static class ReportEndpoints
         var yearStart = new DateOnly(y, 1, 1);
         var yearEnd = yearStart.AddYears(1);
 
-        // Optional account filter (Conta à ordem / Cartão Refeição); balances then use that account's opening balance.
+        // Optional account filter; balances then use that account's opening balance.
         var transactions = db.Transactions.AsQueryable();
-        if (account is { } acc) transactions = transactions.Where(t => t.Account == acc);
+        if (accountId is { } acc) transactions = transactions.Where(t => t.AccountId == acc);
 
         // One aggregated query for all cells of the year (runs as GROUP BY in SQL Server).
         var cells = await transactions
@@ -115,11 +118,18 @@ public static class ReportEndpoints
         var net = Enumerable.Range(0, 12).Select(i => income.Months[i] - expense.Months[i]).ToArray();
 
         // Balance only counts from the month of the start date onwards (that month's "Saldo Anterior" is the opening balance).
-        async Task<(decimal?[] Previous, decimal?[] End)> Balances(IQueryable<Transaction> source, decimal opening)
+        // For a single account, transfers in/out of it count too (for all accounts together they cancel out).
+        async Task<(decimal?[] Previous, decimal?[] End)> Balances(IQueryable<Transaction> source, decimal opening, int? forAccount)
         {
             var countedFrom = yearStart > startMonth ? yearStart : startMonth;
             var netBefore = await SignedSumAsync(source, startMonth, yearStart);
             var countedNet = await MonthlyNetAsync(source, countedFrom, yearEnd);
+            if (forAccount is { } acc)
+            {
+                netBefore += await TransferEndpoints.NetAsync(db, acc, startMonth, yearStart);
+                foreach (var (key, value) in await TransferEndpoints.MonthlyNetAsync(db, acc, countedFrom, yearEnd))
+                    countedNet[key] = countedNet.GetValueOrDefault(key) + value;
+            }
 
             var previous = new decimal?[12];
             var end = new decimal?[12];
@@ -136,17 +146,30 @@ public static class ReportEndpoints
             return (previous, end);
         }
 
-        var (previous, end) = await Balances(transactions, settings.OpeningFor(account));
-        decimal?[]? previousMain = null, previousMealCard = null;
-        if (account is null)
+        var (previous, end) = await Balances(transactions, await SettingsEndpoints.OpeningAsync(db, accountId), accountId);
+
+        // With an account filter, "Saldo do mês" also counts that account's transfers so that previous + net = end.
+        decimal[]? transfers = null;
+        if (accountId is { } filtered)
         {
-            previousMain = (await Balances(db.Transactions.Where(t => t.Account == PaymentAccount.Main),
-                settings.OpeningFor(PaymentAccount.Main))).Previous;
-            previousMealCard = (await Balances(db.Transactions.Where(t => t.Account == PaymentAccount.MealCard),
-                settings.OpeningFor(PaymentAccount.MealCard))).Previous;
+            var monthly = await TransferEndpoints.MonthlyNetAsync(db, filtered, yearStart, yearEnd);
+            transfers = Enumerable.Range(1, 12).Select(mm => monthly.GetValueOrDefault((y, mm))).ToArray();
+            for (var i = 0; i < 12; i++) net[i] += transfers[i];
+        }
+        List<AccountSeries>? byAccount = null;
+        if (accountId is null)
+        {
+            byAccount = [];
+            foreach (var a in await db.Accounts.AsNoTracking().OrderBy(a => a.SortOrder).ThenBy(a => a.Name).ToListAsync())
+            {
+                var values = (await Balances(db.Transactions.Where(t => t.AccountId == a.Id), a.OpeningBalance, a.Id)).Previous;
+                // Inactive accounts only show while they still hold money.
+                if (a.IsActive || values.Any(v => v is not null and not 0))
+                    byAccount.Add(new AccountSeries(a.Id, a.Name, a.Kind, a.Color, a.IsActive, values));
+            }
         }
 
-        return Results.Ok(new MonthlyGrid(y, startMonth, income, expense, previous, net, end, previousMain, previousMealCard));
+        return Results.Ok(new MonthlyGrid(y, startMonth, income, expense, previous, net, end, byAccount, transfers));
     }
 
     private static async Task<IResult> GetDashboard(int? year, int? month, AppDbContext db)
@@ -178,6 +201,7 @@ public static class ReportEndpoints
         var countedFrom = seriesStart > startMonth ? seriesStart : startMonth;
         var countedNet = await MonthlyNetAsync(db.Transactions, countedFrom, monthEnd);
         var netBefore = await SignedSumAsync(db.Transactions, startMonth, seriesStart);
+        var totalOpening = await SettingsEndpoints.OpeningAsync(db, null);
 
         var series = new List<MonthSummary>();
         decimal? running = null;
@@ -188,7 +212,7 @@ public static class ReportEndpoints
             var expense = pm?.Expense ?? 0;
             if (d >= startMonth)
             {
-                running ??= settings.OpeningFor(null) + netBefore;
+                running ??= totalOpening + netBefore;
                 running += countedNet.GetValueOrDefault(key);
             }
             var net = income - expense;
@@ -196,10 +220,23 @@ public static class ReportEndpoints
                 income > 0 ? Math.Round(net / income, 4) : null));
         }
 
-        async Task<decimal?> BalanceAt(PaymentAccount acc) => monthEnd <= startMonth
-            ? null
-            : settings.OpeningFor(acc) + await SignedSumAsync(db.Transactions.Where(t => t.Account == acc), startMonth, monthEnd);
-        var accountBalances = new AccountBalances(await BalanceAt(PaymentAccount.Main), await BalanceAt(PaymentAccount.MealCard));
+        // Balance per account at the end of the month (one GROUP BY for all accounts).
+        var netPerAccount = monthEnd <= startMonth
+            ? []
+            : await db.Transactions
+                .Where(t => t.Date >= startMonth && t.Date < monthEnd)
+                .GroupBy(t => t.AccountId)
+                .Select(x => new { AccountId = x.Key, Net = x.Sum(t => t.Type == EntryType.Income ? t.Amount : -t.Amount) })
+                .ToDictionaryAsync(x => x.AccountId, x => x.Net);
+        foreach (var (acc, value) in await TransferEndpoints.NetPerAccountAsync(db, startMonth, monthEnd))
+            netPerAccount[acc] = netPerAccount.GetValueOrDefault(acc) + value;
+        var accountBalances = (await db.Accounts.AsNoTracking().OrderBy(a => a.SortOrder).ThenBy(a => a.Name).ToListAsync())
+            .Select(a => (a.IsActive, Dto: new AccountBalance(a.Id, a.Name, a.Kind, a.Color,
+                monthEnd <= startMonth ? null : a.OpeningBalance + netPerAccount.GetValueOrDefault(a.Id))))
+            // Inactive accounts only show while they still hold money.
+            .Where(x => x.IsActive || x.Dto.Balance is not null and not 0)
+            .Select(x => x.Dto)
+            .ToList();
         var todayDate = DateOnly.FromDateTime(today);
         var lastDay = monthEnd.AddDays(-1);
         var investments = await HoldingEndpoints.TotalValueAsync(db, lastDay < todayDate ? lastDay : todayDate);

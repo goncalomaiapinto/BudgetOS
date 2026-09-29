@@ -10,7 +10,7 @@ public record TransactionRequest(
     int? SubCategoryId,
     decimal? Amount,
     string? Description,
-    PaymentAccount? Account = null);
+    int? AccountId = null);
 
 public record TransactionDto(
     int Id,
@@ -21,7 +21,10 @@ public record TransactionDto(
     string? CategoryColor,
     int? SubCategoryId,
     string? SubCategoryName,
-    PaymentAccount Account,
+    int AccountId,
+    string AccountName,
+    AccountKind AccountKind,
+    string? AccountColor,
     decimal Amount,
     string? Description,
     TransactionSource Source,
@@ -34,7 +37,7 @@ public record TransactionQuery(
     EntryType? Type,
     int? CategoryId,
     int? SubCategoryId,
-    PaymentAccount? Account,
+    int? AccountId,
     string? Search,
     decimal? MinAmount,
     decimal? MaxAmount,
@@ -61,7 +64,7 @@ public static class TransactionEndpoints
             if (q.Type is { } type) query = query.Where(t => t.Type == type);
             if (q.CategoryId is { } categoryId) query = query.Where(t => t.CategoryId == categoryId);
             if (q.SubCategoryId is { } subId) query = query.Where(t => t.SubCategoryId == subId);
-            if (q.Account is { } account) query = query.Where(t => t.Account == account);
+            if (q.AccountId is { } accountId) query = query.Where(t => t.AccountId == accountId);
             if (!string.IsNullOrWhiteSpace(q.Search))
             {
                 var search = q.Search.Trim();
@@ -108,6 +111,7 @@ public static class TransactionEndpoints
 
         g.MapPost("/", async (TransactionRequest req, AppDbContext db) =>
         {
+            req = req with { AccountId = req.AccountId ?? await AccountEndpoints.DefaultIdAsync(db) };
             var errors = await ValidateAsync(req, db);
             if (errors.Count > 0) return Problems.Validation(errors);
 
@@ -126,6 +130,7 @@ public static class TransactionEndpoints
             var entity = await db.Transactions.FindAsync(id);
             if (entity is null) return Problems.NotFound("Transação não encontrada.");
 
+            req = req with { AccountId = req.AccountId ?? await AccountEndpoints.DefaultIdAsync(db) };
             var errors = await ValidateAsync(req, db);
             if (errors.Count > 0) return Problems.Validation(errors);
 
@@ -148,7 +153,7 @@ public static class TransactionEndpoints
             t.Id, t.Date, t.Type,
             t.CategoryId, t.Category.Name, t.Category.Color,
             t.SubCategoryId, t.SubCategory != null ? t.SubCategory.Name : null,
-            t.Account, t.Amount, t.Description, t.Source, t.CreatedAt, t.UpdatedAt);
+            t.AccountId, t.Account.Name, t.Account.Kind, t.Account.Color, t.Amount, t.Description, t.Source, t.CreatedAt, t.UpdatedAt);
 
     private static void Apply(Transaction entity, TransactionRequest req, DateTime now)
     {
@@ -156,7 +161,7 @@ public static class TransactionEndpoints
         entity.Type = req.Type!.Value;
         entity.CategoryId = req.CategoryId!.Value;
         entity.SubCategoryId = req.SubCategoryId;
-        entity.Account = req.Account ?? PaymentAccount.Main;
+        entity.AccountId = req.AccountId!.Value;
         entity.Amount = req.Amount!.Value;
         entity.Description = string.IsNullOrWhiteSpace(req.Description) ? null : req.Description.Trim();
         entity.UpdatedAt = now;
@@ -175,6 +180,9 @@ public static class TransactionEndpoints
             errors.AddError("amount", "O valor só pode ter duas casas decimais.");
         else if (amount >= 10_000_000_000m)
             errors.AddError("amount", "O valor é demasiado grande.");
+
+        if (req.AccountId is { } accountId && !await db.Accounts.AnyAsync(a => a.Id == accountId))
+            errors.AddError("accountId", "A conta não existe.");
 
         if (req.Description?.Trim().Length > 500)
             errors.AddError("description", "A descrição não pode ter mais de 500 caracteres.");

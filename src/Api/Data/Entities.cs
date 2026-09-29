@@ -6,11 +6,29 @@ public enum EntryType
     Expense
 }
 
-/// <summary>Where the money comes from / goes to. Only two fixed accounts for now.</summary>
-public enum PaymentAccount
+public enum AccountKind
 {
-    Main,     // Conta à ordem
-    MealCard  // Cartão Refeição
+    Bank,     // bank account (Millennium, Revolut…)
+    MealCard  // meal card: top-ups are income in "Receitas › Cartão Refeição"
+}
+
+/// <summary>Where the money comes from / goes to (bank accounts, meal card).</summary>
+public class Account
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public AccountKind Kind { get; set; } = AccountKind.Bank;
+    public string? Color { get; set; }
+    public int SortOrder { get; set; }
+    public bool IsActive { get; set; } = true;
+
+    /// <summary>Used when nothing else says which account a transaction belongs to. Exactly one account has it.</summary>
+    public bool IsDefault { get; set; }
+
+    /// <summary>Balance on the start date (Definições › "A contar a partir de").</summary>
+    public decimal OpeningBalance { get; set; }
+
+    public List<Transaction> Transactions { get; set; } = [];
 }
 
 public enum TransactionSource
@@ -86,7 +104,8 @@ public class Transaction
     public int? SubCategoryId { get; set; }
     public SubCategory? SubCategory { get; set; }
 
-    public PaymentAccount Account { get; set; } = PaymentAccount.Main;
+    public int AccountId { get; set; }
+    public Account Account { get; set; } = null!;
 
     /// <summary>Always positive; the sign comes from <see cref="Type"/>.</summary>
     public decimal Amount { get; set; }
@@ -99,6 +118,26 @@ public class Transaction
     public string? ImportHash { get; set; }
 }
 
+/// <summary>
+/// Money moved between two of the user's accounts (e.g. Millennium → Revolut).
+/// Changes both account balances but is neither income nor expense, so it never enters the monthly totals.
+/// </summary>
+public class Transfer
+{
+    public int Id { get; set; }
+    public DateOnly Date { get; set; }
+    public int FromAccountId { get; set; }
+    public Account FromAccount { get; set; } = null!;
+    public int ToAccountId { get; set; }
+    public Account ToAccount { get; set; } = null!;
+
+    /// <summary>Always positive.</summary>
+    public decimal Amount { get; set; }
+    public string? Description { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Planned amount (income or expense, per the category type) for one subcategory in one month.</summary>
 public class BudgetPlan
 {
@@ -108,6 +147,10 @@ public class BudgetPlan
     public int SubCategoryId { get; set; }
     public SubCategory SubCategory { get; set; } = null!;
     public decimal Amount { get; set; }
+
+    /// <summary>Account the money is expected to come from / go to; null = the default account.</summary>
+    public int? AccountId { get; set; }
+    public Account? Account { get; set; }
 }
 
 public class AppSetting
@@ -118,8 +161,6 @@ public class AppSetting
 
 public static class SettingKeys
 {
-    public const string OpeningBalance = "OpeningBalance";
     public const string OpeningBalanceDate = "OpeningBalanceDate";
-    public const string MealCardOpeningBalance = "MealCardOpeningBalance";
     public const string HoldingsSeeded = "HoldingsSeeded";
 }

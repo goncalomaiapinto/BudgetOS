@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState, type FormEvent } from 'react'
-import { ACCOUNT_LABELS, api, ApiError, type Category, type EntryType, type PaymentAccount } from '../lib/api'
+import { accountMemory, defaultAccount, suggestAccount } from '../lib/accounts'
+import { api, ApiError, type EntryType } from '../lib/api'
 import { useApp } from '../lib/app-context'
 import { amountToInput, cx, evalAmount, formatMoney, isExpression, parseDate, todayIso } from '../lib/format'
 import { DateInput } from './DateInput'
@@ -21,59 +22,63 @@ const session = {
   setCategory(type: EntryType, id: number) {
     sessionStorage.setItem(`tx.lastCategory.${type}`, String(id))
   },
-}
-
-// Remembered across sessions: the account last used for each subcategory (e.g. Restaurante → Cartão Refeição).
-const accountMemory = {
-  get(subCategoryId: number): PaymentAccount | null {
+  // last transfer direction (e.g. Millennium → Revolut)
+  transfer(): { from: number; to: number } | null {
     try {
-      const v = localStorage.getItem(`tx.account.sub.${subCategoryId}`)
-      return v === 'Main' || v === 'MealCard' ? v : null
+      return JSON.parse(sessionStorage.getItem('tx.lastTransfer') ?? 'null')
     } catch {
       return null
     }
   },
-  set(subCategoryId: number, account: PaymentAccount) {
-    try {
-      localStorage.setItem(`tx.account.sub.${subCategoryId}`, account)
-    } catch {
-      // storage unavailable: the default account is used next time
-    }
+  setTransfer(from: number, to: number) {
+    sessionStorage.setItem('tx.lastTransfer', JSON.stringify({ from, to }))
   },
 }
 
-const normalize = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
-
-/** Account suggested for a subcategory: what was used last time, else the meal card for "Renda / Cartão Refeição". */
-function suggestedAccount(categories: Category[], type: EntryType, subCategoryId: number | ''): PaymentAccount {
-  if (subCategoryId === '') return 'Main'
-  const remembered = accountMemory.get(subCategoryId)
-  if (remembered) return remembered
-  const sub = categories.flatMap((c) => c.subCategories).find((s) => s.id === subCategoryId)
-  return type === 'Income' && sub && normalize(sub.name).includes('cartao refeicao') ? 'MealCard' : 'Main'
-}
-
 export function TransactionModal() {
-  const { modal, closeTransaction, categories, refresh, toast } = useApp()
+  const { modal, closeTransaction, categories, accounts, refresh, toast } = useApp()
   const editing = modal.transaction
+  const editingTransfer = modal.transfer
   const preset = modal.preset
 
+  // "Transferência" tab: money moved between two accounts (not income nor expense).
+  const activeAccounts = accounts.filter((a) => a.isActive)
+  const lastTransfer = session.transfer()
+  const [isTransfer, setIsTransfer] = useState(!!editingTransfer || !!preset?.transfer)
+  const [fromId, setFromId] = useState<number | ''>(
+    () => editingTransfer?.fromAccountId ?? lastTransfer?.from ?? defaultAccount(accounts)?.id ?? '',
+  )
+  const [toId, setToId] = useState<number | ''>(
+    () =>
+      editingTransfer?.toAccountId ??
+      lastTransfer?.to ??
+      activeAccounts.find((a) => a.id !== (lastTransfer?.from ?? defaultAccount(accounts)?.id))?.id ??
+      '',
+  )
+
   const [type, setType] = useState<EntryType>(editing?.type ?? preset?.type ?? 'Expense')
-  const [date, setDate] = useState(editing?.date ?? preset?.date ?? session.date)
+  const [date, setDate] = useState(editingTransfer?.date ?? editing?.date ?? preset?.date ?? session.date)
   const [categoryId, setCategoryId] = useState<number | ''>(
     () => editing?.categoryId ?? preset?.categoryId ?? defaultCategory(editing?.type ?? preset?.type ?? 'Expense'),
   )
   const [subCategoryId, setSubCategoryId] = useState<number | ''>(
     editing?.subCategoryId ?? preset?.subCategoryId ?? '',
   )
-  const [account, setAccount] = useState<PaymentAccount>(
+  const [accountId, setAccountId] = useState<number | ''>(
     () =>
-      editing?.account ??
-      preset?.account ??
-      suggestedAccount(categories, editing?.type ?? preset?.type ?? 'Expense', preset?.subCategoryId ?? ''),
+      editing?.accountId ??
+      preset?.accountId ??
+      suggestAccount(accounts, categories, editing?.type ?? preset?.type ?? 'Expense', preset?.subCategoryId ?? ''),
   )
-  const [amount, setAmount] = useState(editing ? amountToInput(editing.amount) : '')
-  const [description, setDescription] = useState(editing?.description ?? '')
+  // Inactive accounts stay visible only when editing a transaction that already uses them.
+  const accountOptions = accounts.filter((a) => a.isActive || a.id === editing?.accountId)
+  const [amount, setAmount] = useState(
+    editingTransfer ? amountToInput(editingTransfer.amount) : editing ? amountToInput(editing.amount) : '',
+  )
+  const [description, setDescription] = useState(editingTransfer?.description ?? editing?.description ?? '')
+  const transferAccountOptions = accounts.filter(
+    (a) => a.isActive || a.id === editingTransfer?.fromAccountId || a.id === editingTransfer?.toAccountId,
+  )
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
   const amountRef = useRef<HTMLInputElement>(null)
@@ -98,23 +103,77 @@ export function TransactionModal() {
   )
 
   const switchType = (t: EntryType) => {
+    setIsTransfer(false)
     if (t === type) return
     setType(t)
     setCategoryId(defaultCategory(t))
     setSubCategoryId('')
-    setAccount('Main')
+    setAccountId(defaultAccount(accounts)?.id ?? '')
   }
 
   const changeSubCategory = (id: number | '') => {
     setSubCategoryId(id)
-    setAccount(suggestedAccount(categories, type, id))
+    setAccountId(suggestAccount(accounts, categories, type, id))
+  }
+
+  const saveTransfer = async (addAnother: boolean, dateValue: string) => {
+    const value = evalAmount(amount)
+    const errs: Record<string, string> = {}
+    if (value === null || value <= 0) errs.amount = 'Indique um valor maior que zero (ex.: 12,50).'
+    if (fromId === '') errs.fromAccountId = 'Escolha a conta de origem.'
+    if (toId === '') errs.toAccountId = 'Escolha a conta de destino.'
+    if (fromId !== '' && fromId === toId) errs.toAccountId = 'A conta de destino tem de ser diferente da de origem.'
+    setErrors(errs)
+    if (Object.keys(errs).length > 0) {
+      amountRef.current?.focus()
+      return
+    }
+    const input = {
+      date: dateValue,
+      fromAccountId: fromId as number,
+      toAccountId: toId as number,
+      amount: value!,
+      description: description.trim() || null,
+    }
+    setBusy(true)
+    try {
+      if (editingTransfer) await api.transfers.update(editingTransfer.id, input)
+      else await api.transfers.create(input)
+      session.date = dateValue
+      session.setTransfer(input.fromAccountId, input.toAccountId)
+      refresh()
+      const name = (id: number) => accounts.find((a) => a.id === id)?.name ?? 'conta'
+      toast(
+        editingTransfer
+          ? 'Transferência atualizada.'
+          : `Transferência de ${formatMoney(input.amount)} (${name(input.fromAccountId)} → ${name(input.toAccountId)}) guardada.`,
+      )
+      if (addAnother && !editingTransfer) {
+        setAmount('')
+        setDescription('')
+        amountRef.current?.focus()
+      } else {
+        closeTransaction()
+      }
+    } catch (e) {
+      if (e instanceof ApiError && e.problem.errors) {
+        const apiErrors = e.problem.errors as Record<string, string[]>
+        setErrors(Object.fromEntries(Object.entries(apiErrors).map(([k, v]) => [k, v.join(' ')])))
+      } else {
+        toast((e as Error).message, 'error')
+      }
+    } finally {
+      setBusy(false)
+    }
   }
 
   const save = async (addAnother: boolean, dateValue = date) => {
+    if (isTransfer) return saveTransfer(addAnother, dateValue)
     const value = evalAmount(amount) // accepts "12,40+3,10"
     const errs: Record<string, string> = {}
     if (value === null || value <= 0) errs.amount = 'Indique um valor maior que zero (ex.: 12,50).'
     if (categoryId === '') errs.categoryId = 'Escolha uma categoria.'
+    if (accountId === '') errs.accountId = 'Escolha a conta.'
     setErrors(errs)
     if (Object.keys(errs).length > 0) {
       amountRef.current?.focus()
@@ -126,7 +185,7 @@ export function TransactionModal() {
       type,
       categoryId: categoryId as number,
       subCategoryId: subCategoryId === '' ? null : subCategoryId,
-      account,
+      accountId: accountId as number,
       amount: value!,
       description: description.trim() || null,
     }
@@ -137,13 +196,13 @@ export function TransactionModal() {
       else await api.transactions.create(input)
       session.date = dateValue
       session.setCategory(type, input.categoryId)
-      if (input.subCategoryId !== null) accountMemory.set(input.subCategoryId, account)
+      if (input.subCategoryId !== null) accountMemory.set(input.subCategoryId, input.accountId)
       refresh()
       toast(
         editing
           ? 'Transação atualizada.'
-          : `${type === 'Income' ? 'Renda' : 'Despesa'} de ${formatMoney(input.amount)} guardada` +
-              (account === 'MealCard' ? ' (cartão refeição).' : '.'),
+          : `${type === 'Income' ? 'Receita' : 'Despesa'} de ${formatMoney(input.amount)} guardada` +
+              ` (${accounts.find((a) => a.id === input.accountId)?.name ?? 'conta'}).`,
       )
       if (addAnother && !editing) {
         setAmount('')
@@ -173,11 +232,11 @@ export function TransactionModal() {
 
   return (
     <Modal
-      title={editing ? 'Editar transação' : 'Nova transação'}
+      title={editingTransfer ? 'Editar transferência' : editing ? 'Editar transação' : 'Nova transação'}
       onClose={closeTransaction}
       footer={
         <>
-          {!editing && (
+          {!editing && !editingTransfer && (
             <button type="button" className="btn" disabled={busy} onClick={() => save(true)} title="Shift+Enter">
               Guardar e adicionar outra
             </button>
@@ -201,9 +260,11 @@ export function TransactionModal() {
         }}
         className="space-y-4"
       >
-        <div className="grid grid-cols-2 gap-2 rounded-lg bg-bg p-1" role="radiogroup" aria-label="Tipo">
-          {(['Income', 'Expense'] as const).map((t) => {
-            const active = type === t
+        <div className="grid grid-cols-3 gap-2 rounded-lg bg-bg p-1" role="radiogroup" aria-label="Tipo">
+          {(['Income', 'Expense', 'Transfer'] as const).map((t) => {
+            const active = t === 'Transfer' ? isTransfer : !isTransfer && type === t
+            // An existing transaction can't become a transfer (and vice versa): they live in different places.
+            const locked = t === 'Transfer' ? !!editing : !!editingTransfer
             return (
               <button
                 key={t}
@@ -211,45 +272,115 @@ export function TransactionModal() {
                 role="radio"
                 aria-checked={active}
                 tabIndex={-1}
-                onClick={() => switchType(t)}
+                disabled={locked}
+                onClick={() => (t === 'Transfer' ? setIsTransfer(true) : switchType(t))}
                 className={cx(
-                  'h-11 cursor-pointer rounded-md text-base font-semibold transition-colors',
+                  'inline-flex h-11 cursor-pointer items-center justify-center gap-1.5 rounded-md text-base font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40',
                   active
                     ? t === 'Income'
                       ? 'bg-[#4e7d25] text-white shadow'
-                      : 'bg-exp text-white shadow'
+                      : t === 'Expense'
+                        ? 'bg-exp text-white shadow'
+                        : 'bg-inc text-white shadow'
                     : 'text-muted hover:text-fg',
                 )}
               >
-                {t === 'Income' ? 'Renda' : 'Despesa'}
+                {t === 'Transfer' && <Icon name="swap" size={15} />}
+                {t === 'Income' ? 'Receita' : t === 'Expense' ? 'Despesa' : 'Transferência'}
               </button>
             )
           })}
         </div>
 
-        <div className="flex items-center gap-2" role="radiogroup" aria-label="Conta">
-          <span className="label mb-0">{isIncome ? 'Entra em' : 'Pago com'}</span>
-          {(['Main', 'MealCard'] as const).map((a) => (
-            <button
-              key={a}
-              type="button"
-              role="radio"
-              aria-checked={account === a}
-              onClick={() => setAccount(a)}
-              className={cx(
-                'inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors',
-                account === a
-                  ? a === 'MealCard'
-                    ? 'border-transparent bg-[#b8a444] text-white'
-                    : 'border-transparent bg-inc text-white'
-                  : 'border-line text-muted hover:text-fg',
-              )}
-            >
-              {a === 'MealCard' && <Icon name="card" size={13} />}
-              {ACCOUNT_LABELS[a]}
-            </button>
-          ))}
+        {isTransfer && (
+          <>
+            <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-2">
+              <div>
+                <label className="label" htmlFor="tr-from">
+                  De
+                </label>
+                <select
+                  id="tr-from"
+                  className={cx('input', errors.fromAccountId && 'border-exp')}
+                  value={fromId}
+                  onChange={(e) => setFromId(e.target.value ? Number(e.target.value) : '')}
+                >
+                  {transferAccountOptions.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <button
+                type="button"
+                className="icon-btn mb-1 size-8"
+                title="Trocar origem e destino"
+                aria-label="Trocar origem e destino"
+                onClick={() => {
+                  setFromId(toId)
+                  setToId(fromId)
+                }}
+              >
+                <Icon name="swap" />
+              </button>
+              <div>
+                <label className="label" htmlFor="tr-to">
+                  Para
+                </label>
+                <select
+                  id="tr-to"
+                  className={cx('input', errors.toAccountId && 'border-exp')}
+                  value={toId}
+                  onChange={(e) => setToId(e.target.value ? Number(e.target.value) : '')}
+                >
+                  {transferAccountOptions.map((a) => (
+                    <option key={a.id} value={a.id} disabled={a.id === fromId}>
+                      {a.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            {(errors.fromAccountId || errors.toAccountId) && (
+              <p className="-mt-2 text-xs text-neg">{errors.fromAccountId ?? errors.toAccountId}</p>
+            )}
+            <p className="-mt-2 text-xs text-muted">
+              Só muda o saldo das duas contas: não conta como receita nem como despesa.
+            </p>
+          </>
+        )}
+
+        {!isTransfer && (
+        <div className="flex flex-wrap items-center gap-2" role="radiogroup" aria-label="Conta">
+          <span className="label mb-0">{isIncome ? 'Entra em' : 'Sai de'}</span>
+          {accountOptions.map((a) => {
+            const active = accountId === a.id
+            return (
+              <button
+                key={a.id}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                onClick={() => setAccountId(a.id)}
+                className={cx(
+                  'inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors',
+                  active ? 'border-transparent text-white' : 'border-line text-muted hover:text-fg',
+                )}
+                style={active ? { background: a.color ?? 'var(--inc)' } : undefined}
+              >
+                {a.kind === 'MealCard' ? (
+                  <Icon name="card" size={13} />
+                ) : (
+                  !active && <span className="size-2 rounded-full" style={{ background: a.color ?? 'var(--muted)' }} />
+                )}
+                {a.name}
+              </button>
+            )
+          })}
         </div>
+        )}
+        {!isTransfer && errors.accountId && <p className="-mt-2 text-xs text-neg">{errors.accountId}</p>}
 
         <div className="grid grid-cols-[1fr_1.2fr] gap-3">
           <div>
@@ -262,7 +393,7 @@ export function TransactionModal() {
               autoFocus
               className={cx(
                 'input h-11 text-right text-lg font-semibold tabular',
-                isIncome ? 'text-pos' : 'text-neg',
+                isTransfer ? 'text-fg' : isIncome ? 'text-pos' : 'text-neg',
                 errors.amount && 'border-exp',
               )}
               inputMode="decimal"
@@ -283,6 +414,7 @@ export function TransactionModal() {
         </div>
         {(errors.amount || errors.date) && <p className="-mt-2 text-xs text-neg">{errors.amount ?? errors.date}</p>}
 
+        {!isTransfer && (
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="label" htmlFor="tx-category">
@@ -326,7 +458,8 @@ export function TransactionModal() {
             </select>
           </div>
         </div>
-        {(errors.categoryId || errors.subCategoryId) && (
+        )}
+        {!isTransfer && (errors.categoryId || errors.subCategoryId) && (
           <p className="-mt-2 text-xs text-neg">{errors.categoryId ?? errors.subCategoryId}</p>
         )}
 

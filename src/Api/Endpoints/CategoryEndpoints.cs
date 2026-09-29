@@ -216,7 +216,7 @@ public static partial class CategoryEndpoints
             {
                 var target = await db.Categories.AsNoTracking().FirstAsync(c => c.Id == targetCategoryId);
                 if (target.Type != entity.Category.Type)
-                    return Problems.Validation("categoryId", "A categoria de destino tem de ser do mesmo tipo (Renda/Despesa).");
+                    return Problems.Validation("categoryId", "A categoria de destino tem de ser do mesmo tipo (Receita/Despesa).");
 
                 // Moving a subcategory drags its transactions along to the new category.
                 var now = DateTime.UtcNow;
@@ -302,7 +302,7 @@ public static partial class CategoryEndpoints
         if (target.Id == excludeCategoryId)
             return Problems.Validation("moveToCategoryId", "A categoria de destino tem de ser diferente da que vai ser apagada.");
         if (target.Type != type)
-            return Problems.Validation("moveToCategoryId", "A categoria de destino tem de ser do mesmo tipo (Renda/Despesa).");
+            return Problems.Validation("moveToCategoryId", "A categoria de destino tem de ser do mesmo tipo (Receita/Despesa).");
 
         if (opt.MoveToSubCategoryId is { } subId)
         {

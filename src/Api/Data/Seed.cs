@@ -11,7 +11,7 @@ public static class Seed
         {
             var categories = new (string Name, EntryType Type, string Color, string[] Subs)[]
             {
-                ("Renda", EntryType.Income, "#1F497D",
+                ("Receitas", EntryType.Income, "#1F497D",
                     ["Vencimento", "Cartão Refeição", "Prendas", "Subsídios / Bónus", "IRS", "Outros"]),
                 ("Transportes", EntryType.Expense, "#4F81BD",
                     ["Mensalidade Carro", "Seguro Carro", "Manutenção Carro", "Combustível", "IUC"]),
@@ -39,11 +39,12 @@ public static class Seed
             }
         }
 
-        if (!await db.AppSettings.AnyAsync(s => s.Key == SettingKeys.OpeningBalance))
-            db.AppSettings.Add(new AppSetting { Key = SettingKeys.OpeningBalance, Value = "0" });
-
-        if (!await db.AppSettings.AnyAsync(s => s.Key == SettingKeys.MealCardOpeningBalance))
-            db.AppSettings.Add(new AppSetting { Key = SettingKeys.MealCardOpeningBalance, Value = "0" });
+        // Fresh databases get a generic main account + meal card (existing ones got theirs from the migration).
+        if (!await db.Accounts.AnyAsync())
+        {
+            db.Accounts.Add(new Account { Name = "Conta à ordem", Kind = AccountKind.Bank, Color = "#1F497D", IsDefault = true, SortOrder = 0 });
+            db.Accounts.Add(new Account { Name = "Cartão Refeição", Kind = AccountKind.MealCard, Color = "#B8A444", SortOrder = 1 });
+        }
 
         if (!await db.AppSettings.AnyAsync(s => s.Key == SettingKeys.OpeningBalanceDate))
             db.AppSettings.Add(new AppSetting

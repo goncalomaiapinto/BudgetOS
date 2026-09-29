@@ -5,8 +5,8 @@
  * Every token has a dark-mode variant; the app follows the OS theme.
  */
 :root {
-  --inc: #1f497d; /* RENDA header */
-  --inc-row: #dce6f1; /* RENDA rows */
+  --inc: #1f497d; /* RECEITA header */
+  --inc-row: #dce6f1; /* RECEITA rows */
   --exp: #c0504d; /* DESPESAS header */
   --exp-row: #f2dcdb; /* DESPESAS rows */
   --exp-sub: #e6b8b7; /* group subtotal */
