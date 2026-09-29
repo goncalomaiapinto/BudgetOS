@@ -1,0 +1,123 @@
+@import 'tailwindcss';
+
+/*
+ * Palette taken from the original Excel (Office 2007 theme).
+ * Every token has a dark-mode variant; the app follows the OS theme.
+ */
+:root {
+  --inc: #1f497d; /* RENDA header */
+  --inc-row: #dce6f1; /* RENDA rows */
+  --exp: #c0504d; /* DESPESAS header */
+  --exp-row: #f2dcdb; /* DESPESAS rows */
+  --exp-sub: #e6b8b7; /* group subtotal */
+  --exp-total: #da9694; /* DESPESAS total */
+  --tot: #9bbb59; /* TOTAL / positive balance */
+  --month: #b8a444; /* month header row */
+  --pos: #3f7d20; /* positive amount text */
+  --neg: #b0302d; /* negative amount text */
+  --surface: #ffffff;
+  --bg: #f4f6f9;
+  --border: #dde2ea;
+  --muted: #64707f;
+  --fg: #1c2430;
+  --cell-muted: #b6bcc6;
+  /* chart series (validated for CVD separation; the net line also differs by mark) */
+  --c-inc: #2f5d96;
+  --c-exp: #c0504d;
+  --c-net: #6e9a2f;
+  --c-grid: #e6e9ee;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --inc: #2c5f9e;
+    --inc-row: #1b2738;
+    --exp: #a8423f;
+    --exp-row: #2e1f22;
+    --exp-sub: #45272a;
+    --exp-total: #5c2f31;
+    --tot: #4d6b21;
+    --month: #7a6c24;
+    --pos: #9bcf5f;
+    --neg: #f08480;
+    --surface: #161b22;
+    --bg: #0d1117;
+    --border: #2a313c;
+    --muted: #8b95a3;
+    --fg: #e4e8ee;
+    --cell-muted: #4a525e;
+    --c-inc: #4a7fc0;
+    --c-exp: #b53f3c;
+    --c-net: #6fa333;
+    --c-grid: #232a33;
+  }
+}
+
+@theme inline {
+  --color-inc: var(--inc);
+  --color-inc-row: var(--inc-row);
+  --color-exp: var(--exp);
+  --color-exp-row: var(--exp-row);
+  --color-exp-sub: var(--exp-sub);
+  --color-exp-total: var(--exp-total);
+  --color-tot: var(--tot);
+  --color-month: var(--month);
+  --color-pos: var(--pos);
+  --color-neg: var(--neg);
+  --color-surface: var(--surface);
+  --color-bg: var(--bg);
+  --color-line: var(--border);
+  --color-muted: var(--muted);
+  --color-fg: var(--fg);
+  --color-cell-muted: var(--cell-muted);
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--fg);
+}
+
+body {
+  font-family:
+    'Segoe UI Variable', 'Segoe UI', system-ui, -apple-system, Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Shared controls, kept as utilities to avoid repeating long class lists. */
+@utility input {
+    @apply h-9 w-full rounded-md border border-line bg-surface px-2.5 text-fg outline-none transition-colors placeholder:text-muted focus:border-inc focus:ring-2 focus:ring-inc/25;
+  }
+
+@utility btn {
+    @apply inline-flex h-9 cursor-pointer items-center justify-center gap-1.5 rounded-md border border-line bg-surface px-3 font-medium text-fg transition-colors select-none hover:bg-bg disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+@utility btn-primary {
+    @apply btn border-transparent bg-inc text-white hover:bg-inc/90;
+  }
+
+@utility btn-danger {
+    @apply btn border-transparent bg-exp text-white hover:bg-exp/90;
+  }
+
+@utility btn-ghost {
+    @apply btn border-transparent bg-transparent hover:bg-fg/5;
+  }
+
+@utility icon-btn {
+    @apply inline-flex size-7 cursor-pointer items-center justify-center rounded text-muted transition-colors hover:bg-fg/10 hover:text-fg disabled:cursor-not-allowed disabled:opacity-30;
+  }
+
+@utility card {
+    @apply rounded-xl border border-line bg-surface;
+  }
+
+@utility label {
+    @apply mb-1 block text-xs font-medium tracking-wide text-muted uppercase;
+  }

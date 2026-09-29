@@ -1,0 +1,23 @@
+{
+  "name": "Orçamento Pessoal",
+  "short_name": "Orçamento",
+  "description": "Receitas, despesas, previsão e investimentos — 100% local.",
+  "lang": "pt-PT",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f4f6f9",
+  "theme_color": "#1f497d",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Orçamento", "url": "/orcamento" },
+    { "name": "Previsão", "url": "/previsao" },
+    { "name": "Investimentos", "url": "/investimentos" },
+    { "name": "Transações", "url": "/transacoes" }
+  ]
+}
