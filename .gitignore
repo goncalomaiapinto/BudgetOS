@@ -1,0 +1,39 @@
+# Build output
+bin/
+obj/
+dist/
+/app/
+logs/
+src/Api/wwwroot/
+*.tsbuildinfo
+
+# Dependencies
+node_modules/
+
+# IDE / OS
+.vs/
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.user
+*.suo
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+
+# Local configuration overrides (machine-specific connection strings, etc.)
+appsettings.*.local.json
+*.env.local
+
+# Financial data: database backups and bank statements must never go to a repository
+backups/
+*.bak
+*.xlsx
+*.xls
+*.csv
+*.pdf
+*.ofx
+*.qif

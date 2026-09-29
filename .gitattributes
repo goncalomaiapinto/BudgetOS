@@ -1,0 +1,10 @@
+# Normalise line endings in the repository; Windows scripts must stay CRLF to run with a double-click.
+* text=auto
+
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+*.png binary
+*.jpg binary
+*.ico binary
