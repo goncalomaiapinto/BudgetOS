@@ -669,5 +669,11 @@ Em Development, a migration é aplicada ao arrancar a API.
 
 ---
 
-> **Privacidade:** o `.gitignore` exclui `backups/`, `*.bak`, `*.xlsx`, `*.csv`, `*.pdf` e `appsettings.*.local.json`.
-> Mesmo assim, **não publique este repositório num remoto**: os dados financeiros ficam só neste PC.
+> **Privacidade:** o código é público, mas **os dados nunca entram no repositório**. Ficam na base de dados local
+> e na pasta `backups/`. O `.gitignore` exclui backups (`*.bak`), extratos (`*.xlsx`, `*.csv`, `*.pdf`, …), logs,
+> a app publicada (`app/`) e configurações locais (`appsettings.*.local.json`). Antes de fazer commit, confirme com
+> `git status` que não aparece nenhum destes ficheiros.
+
+## Licença
+
+[MIT](LICENSE)
