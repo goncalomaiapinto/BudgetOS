@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { accountMemory, defaultAccount, suggestAccount } from '../lib/accounts'
 import { api, ApiError, type EntryType } from '../lib/api'
 import { useApp } from '../lib/app-context'
@@ -64,12 +64,24 @@ export function TransactionModal() {
   const [subCategoryId, setSubCategoryId] = useState<number | ''>(
     editing?.subCategoryId ?? preset?.subCategoryId ?? '',
   )
+  // Once the account is chosen by hand (or comes fixed: editing, grid filtered by account), it sticks until the
+  // modal closes: changing type/category/subcategory or "Guardar e adicionar outra" no longer resets it.
+  const [accountPinned, setAccountPinned] = useState(!!editing || preset?.accountId != null)
   const [accountId, setAccountId] = useState<number | ''>(
     () =>
       editing?.accountId ??
       preset?.accountId ??
       suggestAccount(accounts, categories, editing?.type ?? preset?.type ?? 'Expense', preset?.subCategoryId ?? ''),
   )
+  // If the modal opened before the accounts arrived (e.g. "N" right after start), fill in the suggestion when they do.
+  useEffect(() => {
+    if (accounts.length === 0) return
+    if (accountId === '') setAccountId(suggestAccount(accounts, categories, type, subCategoryId))
+    if (fromId === '') setFromId(defaultAccount(accounts)?.id ?? '')
+    if (toId === '') setToId(accounts.find((a) => a.isActive && a.id !== (fromId || defaultAccount(accounts)?.id))?.id ?? '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accounts])
+
   // Inactive accounts stay visible only when editing a transaction that already uses them.
   const accountOptions = accounts.filter((a) => a.isActive || a.id === editing?.accountId)
   const [amount, setAmount] = useState(
@@ -108,12 +120,12 @@ export function TransactionModal() {
     setType(t)
     setCategoryId(defaultCategory(t))
     setSubCategoryId('')
-    setAccountId(defaultAccount(accounts)?.id ?? '')
+    if (!accountPinned) setAccountId(defaultAccount(accounts)?.id ?? '')
   }
 
   const changeSubCategory = (id: number | '') => {
     setSubCategoryId(id)
-    setAccountId(suggestAccount(accounts, categories, type, id))
+    if (!accountPinned) setAccountId(suggestAccount(accounts, categories, type, id))
   }
 
   const saveTransfer = async (addAnother: boolean, dateValue: string) => {
@@ -362,7 +374,10 @@ export function TransactionModal() {
                 type="button"
                 role="radio"
                 aria-checked={active}
-                onClick={() => setAccountId(a.id)}
+                onClick={() => {
+                  setAccountId(a.id)
+                  setAccountPinned(true)
+                }}
                 className={cx(
                   'inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors',
                   active ? 'border-transparent text-white' : 'border-line text-muted hover:text-fg',
