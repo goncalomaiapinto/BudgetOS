@@ -229,6 +229,7 @@ para ficarem legíveis no SSMS.
 | Color | `#RRGGBB`, opcional | usada nos gráficos e listas |
 | SortOrder | int | ordem na grelha e nos selects |
 | IsActive | bit | `0` esconde a categoria nos selects de nova transação e mantém o histórico |
+| IsSavings | bit | só despesas: **poupança / investimento**. O dinheiro sai da conta (conta nos saldos) mas não é consumo: aparece à parte das despesas |
 
 **SubCategories**
 
@@ -474,6 +475,22 @@ Seletor de mês (‹ ›, "Hoje"). Mostra:
     que o que já passou do previsto fica como está. Nos meses fechados mostra o **saldo final real**. Por baixo
     aparece a diferença para o saldo previsto ("X € melhor/pior do que o previsto").
 - **Só linhas com valores** esconde as linhas sem previsto nem real. A escolha fica guardada no browser.
+
+### Poupança e investimentos (não são despesa)
+
+Uma categoria de despesa pode ser marcada como **Poupança / investimento** (Categorias › ✎). A categoria
+**Investimentos** já vem marcada. Nessas categorias o dinheiro **sai da conta**, por isso os saldos baixam, mas
+**não conta como consumo**:
+
+- **Despesas**, o donut e o top 5 do Dashboard deixam de o incluir. A **% poupada** = (receita − despesas) ÷ receita
+  passa a contar o investido como poupado.
+- O gráfico dos 12 meses tem uma barra **Investido**, e o cartão Investimentos mostra o investido no mês.
+- No **Orçamento** e na **Previsão** há uma secção própria, **POUPANÇA E INVESTIMENTOS**. No fundo da grelha:
+  **Saldo do mês** (receita − despesas), **Investido**, (Transferências) e **Saldo acumulado** das contas.
+- Na **Previsão**, cada conta tem também a coluna **Investido**. O saldo final previsto e a projeção descontam o
+  investido, porque o dinheiro sai da conta.
+- Na lista de **Transações**, o rodapé mostra Receitas, Despesas, **Investido** e o Saldo
+  (receita − despesas − investido).
 
 ### Investimentos
 

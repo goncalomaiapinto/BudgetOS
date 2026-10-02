@@ -21,14 +21,21 @@ public record MonthlyGrid(
     decimal?[] EndBalance,
     // Only when no account filter is applied: the "Saldo Anterior" split per account.
     List<AccountSeries>? PreviousBalanceByAccount = null,
-    // Only with an account filter: net transfers (in − out) of that account per month (already included in Net).
-    decimal[]? Transfers = null);
+    // Only with an account filter: net transfers (in − out) of that account per month.
+    decimal[]? Transfers = null,
+    // Expense categories marked as savings/investments, reported apart from consumption.
+    // Net = income − expense (consumption); End = Previous + Net − Savings (+ Transfers).
+    GridSection? Savings = null);
 
 public record AccountSeries(int AccountId, string Name, AccountKind Kind, string? Color, bool IsActive, decimal?[] Values);
 
 // ---- Dashboard ----
 
-public record MonthSummary(int Year, int Month, decimal Income, decimal Expense, decimal Net, decimal? Balance, decimal? SavingsRate);
+/// <param name="Expense">Consumption only; money put into savings/investment categories is <paramref name="Invested"/>.</param>
+/// <param name="Net">Income − expense: what was left to save (includes what was invested).</param>
+/// <param name="SavingsRate">Net ÷ income.</param>
+public record MonthSummary(
+    int Year, int Month, decimal Income, decimal Expense, decimal Net, decimal? Balance, decimal? SavingsRate, decimal Invested = 0);
 
 public record CategoryAmount(int CategoryId, string Name, string? Color, decimal Amount, decimal Percent);
 
@@ -46,7 +53,8 @@ public record Dashboard(
     List<MonthSummary> Series,
     List<CategoryAmount> ExpensesByCategory,
     List<SubCategoryAmount> TopSubCategories,
-    List<TransactionDto> LatestTransactions);
+    List<TransactionDto> LatestTransactions,
+    decimal PreviousInvestments = 0); // same, at the end of the previous month (for the net-worth comparison)
 
 public static class ReportEndpoints
 {
@@ -83,12 +91,14 @@ public static class ReportEndpoints
             .OrderBy(c => c.SortOrder).ThenBy(c => c.Name)
             .ToListAsync();
 
-        GridSection BuildSection(EntryType type)
+        GridSection BuildSection(EntryType type, bool savings = false)
         {
-            var sectionCells = cells.Where(c => c.Type == type).ToList();
+            var sectionCategories = categories.Where(c => c.Type == type && c.IsSavings == savings).ToList();
+            var ids = sectionCategories.Select(c => c.Id).ToHashSet();
+            var sectionCells = cells.Where(c => c.Type == type && ids.Contains(c.CategoryId)).ToList();
             var result = new List<GridCategory>();
 
-            foreach (var cat in categories.Where(c => c.Type == type))
+            foreach (var cat in sectionCategories)
             {
                 var catCells = sectionCells.Where(c => c.CategoryId == cat.Id).ToList();
                 if (!cat.IsActive && catCells.Count == 0) continue;
@@ -115,6 +125,8 @@ public static class ReportEndpoints
 
         var income = BuildSection(EntryType.Income);
         var expense = BuildSection(EntryType.Expense);
+        var savingsSection = BuildSection(EntryType.Expense, savings: true);
+        // "Saldo do mês" = income − consumption; investments are shown on their own line.
         var net = Enumerable.Range(0, 12).Select(i => income.Months[i] - expense.Months[i]).ToArray();
 
         // Balance only counts from the month of the start date onwards (that month's "Saldo Anterior" is the opening balance).
@@ -148,13 +160,12 @@ public static class ReportEndpoints
 
         var (previous, end) = await Balances(transactions, await SettingsEndpoints.OpeningAsync(db, accountId), accountId);
 
-        // With an account filter, "Saldo do mês" also counts that account's transfers so that previous + net = end.
+        // With an account filter, that account's transfers get their own line (previous + net − savings + transfers = end).
         decimal[]? transfers = null;
         if (accountId is { } filtered)
         {
             var monthly = await TransferEndpoints.MonthlyNetAsync(db, filtered, yearStart, yearEnd);
             transfers = Enumerable.Range(1, 12).Select(mm => monthly.GetValueOrDefault((y, mm))).ToArray();
-            for (var i = 0; i < 12; i++) net[i] += transfers[i];
         }
         List<AccountSeries>? byAccount = null;
         if (accountId is null)
@@ -169,7 +180,7 @@ public static class ReportEndpoints
             }
         }
 
-        return Results.Ok(new MonthlyGrid(y, startMonth, income, expense, previous, net, end, byAccount, transfers));
+        return Results.Ok(new MonthlyGrid(y, startMonth, income, expense, previous, net, end, byAccount, transfers, savingsSection));
     }
 
     private static async Task<IResult> GetDashboard(int? year, int? month, AppDbContext db)
@@ -194,7 +205,8 @@ public static class ReportEndpoints
                 x.Key.Year,
                 x.Key.Month,
                 Income = x.Sum(t => t.Type == EntryType.Income ? t.Amount : 0),
-                Expense = x.Sum(t => t.Type == EntryType.Expense ? t.Amount : 0),
+                Expense = x.Sum(t => t.Type == EntryType.Expense && !t.Category.IsSavings ? t.Amount : 0),
+                Invested = x.Sum(t => t.Type == EntryType.Expense && t.Category.IsSavings ? t.Amount : 0),
             })
             .ToDictionaryAsync(x => (x.Year, x.Month));
 
@@ -210,6 +222,7 @@ public static class ReportEndpoints
             var key = (d.Year, d.Month);
             var income = perMonth.TryGetValue(key, out var pm) ? pm.Income : 0;
             var expense = pm?.Expense ?? 0;
+            var invested = pm?.Invested ?? 0;
             if (d >= startMonth)
             {
                 running ??= totalOpening + netBefore;
@@ -217,7 +230,7 @@ public static class ReportEndpoints
             }
             var net = income - expense;
             series.Add(new MonthSummary(d.Year, d.Month, income, expense, net, running,
-                income > 0 ? Math.Round(net / income, 4) : null));
+                income > 0 ? Math.Round(net / income, 4) : null, invested));
         }
 
         // Balance per account at the end of the month (one GROUP BY for all accounts).
@@ -240,9 +253,10 @@ public static class ReportEndpoints
         var todayDate = DateOnly.FromDateTime(today);
         var lastDay = monthEnd.AddDays(-1);
         var investments = await HoldingEndpoints.TotalValueAsync(db, lastDay < todayDate ? lastDay : todayDate);
+        var previousInvestments = await HoldingEndpoints.TotalValueAsync(db, monthStart.AddDays(-1));
 
         var byCategory = await db.Transactions
-            .Where(t => t.Type == EntryType.Expense && t.Date >= monthStart && t.Date < monthEnd)
+            .Where(t => t.Type == EntryType.Expense && !t.Category.IsSavings && t.Date >= monthStart && t.Date < monthEnd)
             .GroupBy(t => new { t.CategoryId, t.Category.Name, t.Category.Color })
             .Select(x => new { x.Key.CategoryId, x.Key.Name, x.Key.Color, Amount = x.Sum(t => t.Amount) })
             .OrderByDescending(x => x.Amount)
@@ -254,7 +268,7 @@ public static class ReportEndpoints
             .ToList();
 
         var top = await db.Transactions
-            .Where(t => t.Type == EntryType.Expense && t.Date >= monthStart && t.Date < monthEnd)
+            .Where(t => t.Type == EntryType.Expense && !t.Category.IsSavings && t.Date >= monthStart && t.Date < monthEnd)
             .GroupBy(t => new
             {
                 t.CategoryId,
@@ -279,7 +293,8 @@ public static class ReportEndpoints
             .Select(TransactionEndpoints.ToDto)
             .ToListAsync();
 
-        return Results.Ok(new Dashboard(series[^1], accountBalances, investments, series[^2], series, expensesByCategory, topSubCategories, latest));
+        return Results.Ok(new Dashboard(series[^1], accountBalances, investments, series[^2], series, expensesByCategory, topSubCategories,
+            latest, previousInvestments));
     }
 
     internal static DateOnly FirstOfMonth(DateOnly d) => new(d.Year, d.Month, 1);

@@ -46,6 +46,12 @@ public class Category
     public int SortOrder { get; set; }
     public bool IsActive { get; set; } = true;
 
+    /// <summary>
+    /// Expense categories only: money that leaves the account but isn't consumption (investments, savings).
+    /// It still lowers the account balances, but is reported apart from expenses ("Poupança e investimentos").
+    /// </summary>
+    public bool IsSavings { get; set; }
+
     public List<SubCategory> SubCategories { get; set; } = [];
     public List<Transaction> Transactions { get; set; } = [];
 }

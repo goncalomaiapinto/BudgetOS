@@ -74,7 +74,7 @@ export default function TransactionsPage() {
 
   useEffect(() => {
     let cancelled = false
-    const empty: TransactionPage = { items: [], totalCount: 0, page: 1, pageSize: PAGE_SIZE, totals: { income: 0, expense: 0, net: 0 } }
+    const empty: TransactionPage = { items: [], totalCount: 0, page: 1, pageSize: PAGE_SIZE, totals: { income: 0, expense: 0, net: 0, invested: 0 } }
     Promise.all([
       type === 'Transfer' ? Promise.resolve(empty) : api.transactions.list(filter),
       showTransfers
@@ -376,6 +376,11 @@ export default function TransactionsPage() {
                       <span>
                         Despesas <strong className="text-neg tabular">{formatMoney(data.totals.expense)}</strong>
                       </span>
+                      {data.totals.invested !== 0 && (
+                        <span title="Poupança/investimentos: sai das contas, mas não é despesa">
+                          Investido <strong className="tabular text-[var(--c-sav)]">{formatMoney(data.totals.invested)}</strong>
+                        </span>
+                      )}
                       <span>
                         Saldo{' '}
                         <strong className={cx('tabular', data.totals.net >= 0 ? 'text-pos' : 'text-neg')}>

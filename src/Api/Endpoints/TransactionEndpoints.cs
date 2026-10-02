@@ -45,7 +45,10 @@ public record TransactionQuery(
     int? Page,
     int? PageSize);
 
-public record TransactionTotals(decimal Income, decimal Expense, decimal Net);
+/// <param name="Expense">Consumption only (categories not marked as savings).</param>
+/// <param name="Invested">Expenses in savings/investment categories.</param>
+/// <param name="Net">Income − expense − invested: how much the listed transactions changed the balances.</param>
+public record TransactionTotals(decimal Income, decimal Expense, decimal Net, decimal Invested = 0);
 
 public record TransactionPage(List<TransactionDto> Items, int TotalCount, int Page, int PageSize, TransactionTotals Totals);
 
@@ -78,8 +81,9 @@ public static class TransactionEndpoints
                 .GroupBy(_ => 1)
                 .Select(x => new TransactionTotals(
                     x.Sum(t => t.Type == EntryType.Income ? t.Amount : 0),
-                    x.Sum(t => t.Type == EntryType.Expense ? t.Amount : 0),
-                    x.Sum(t => t.Type == EntryType.Income ? t.Amount : -t.Amount)))
+                    x.Sum(t => t.Type == EntryType.Expense && !t.Category.IsSavings ? t.Amount : 0),
+                    x.Sum(t => t.Type == EntryType.Income ? t.Amount : -t.Amount),
+                    x.Sum(t => t.Type == EntryType.Expense && t.Category.IsSavings ? t.Amount : 0)))
                 .ToListAsync();
             var totalCount = await query.CountAsync();
             var totals = totalsRows.FirstOrDefault() ?? new TransactionTotals(0, 0, 0);

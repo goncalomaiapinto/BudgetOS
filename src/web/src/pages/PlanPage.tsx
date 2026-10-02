@@ -57,7 +57,7 @@ export default function PlanPage() {
     setData(d)
     const v: Record<number, string> = {}
     const acc: Record<number, number> = {}
-    for (const [type, groups] of [['Income', d.income], ['Expense', d.expense]] as const) {
+    for (const [type, groups] of [['Income', d.income], ['Expense', d.expense], ['Expense', d.savings]] as const) {
       for (const line of groups.flatMap((g) => g.lines)) {
         if (line.subCategoryId === null) continue
         v[line.subCategoryId] = line.planned ? amountToInput(line.planned) : ''
@@ -87,7 +87,10 @@ export default function PlanPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [year, month, version, accounts.length])
 
-  const lines = useMemo(() => (data ? [...data.income, ...data.expense].flatMap((g) => g.lines) : []), [data])
+  const lines = useMemo(
+    () => (data ? [...data.income, ...data.expense, ...data.savings].flatMap((g) => g.lines) : []),
+    [data],
+  )
   const savedAccount = (l: BudgetLine) => l.accountId ?? data?.defaultAccountId
   const accountChanged = (l: BudgetLine) =>
     l.subCategoryId !== null && l.planned > 0 && lineAccounts[l.subCategoryId] !== savedAccount(l)
@@ -105,10 +108,14 @@ export default function PlanPage() {
   const totals = data && {
     income: { planned: sum(data.income, planned), actual: data.incomeTotals.actual, projected: sum(data.income, projected) },
     expense: { planned: sum(data.expense, planned), actual: data.expenseTotals.actual, projected: sum(data.expense, projected) },
+    savings: { planned: sum(data.savings, planned), actual: data.savingsTotals.actual, projected: sum(data.savings, projected) },
   }
   const prev = data?.previousBalance ?? null
-  const plannedEnd = totals && prev !== null ? prev + totals.income.planned - totals.expense.planned : null
-  const projectedEnd = totals && prev !== null ? prev + totals.income.projected - totals.expense.projected : null
+  // Investments aren't consumption, but the money does leave the accounts.
+  const plannedEnd =
+    totals && prev !== null ? prev + totals.income.planned - totals.expense.planned - totals.savings.planned : null
+  const projectedEnd =
+    totals && prev !== null ? prev + totals.income.projected - totals.expense.projected - totals.savings.projected : null
 
   // Per account, recomputed live: planned end = previous + planned lines on the account;
   // projection = previous + what really moved this month + what is planned on it and hasn't happened yet.
@@ -117,12 +124,14 @@ export default function PlanPage() {
     ? [
         ...data.income.flatMap((g) => g.lines.map((l) => ({ l, sign: 1 }))),
         ...data.expense.flatMap((g) => g.lines.map((l) => ({ l, sign: -1 }))),
+        ...data.savings.flatMap((g) => g.lines.map((l) => ({ l, sign: -1, savings: true }))),
       ]
     : []
   const perAccount = (data?.accounts ?? []).map((a) => {
     const mine = signedLines.filter(({ l }) => lineAccount(l) === a.id)
     const plannedIncome = mine.reduce((sum, { l, sign }) => sum + (sign > 0 ? planned(l) : 0), 0)
-    const plannedExpense = mine.reduce((sum, { l, sign }) => sum + (sign < 0 ? planned(l) : 0), 0)
+    const plannedExpense = mine.reduce((sum, x) => sum + (x.sign < 0 && !('savings' in x) ? planned(x.l) : 0), 0)
+    const plannedSavings = mine.reduce((sum, x) => sum + ('savings' in x ? planned(x.l) : 0), 0)
     const plannedNet = plannedIncome - plannedExpense
     const remaining =
       data?.status === 'past' ? 0 : mine.reduce((sum, { l, sign }) => sum + sign * Math.max(planned(l) - l.actual, 0), 0)
@@ -130,10 +139,14 @@ export default function PlanPage() {
       ...a,
       plannedIncome,
       plannedExpense,
+      plannedSavings,
       plannedNet,
-      plannedEnd: a.previousBalance === null ? null : a.previousBalance + plannedNet,
+      plannedEnd: a.previousBalance === null ? null : a.previousBalance + plannedNet - plannedSavings,
       // transfers already made this month move money between accounts (they don't touch income/expense)
-      projectedEnd: a.previousBalance === null ? null : a.previousBalance + a.actualNet + a.transferNet + remaining,
+      projectedEnd:
+        a.previousBalance === null
+          ? null
+          : a.previousBalance + a.actualNet - a.actualSavings + a.transferNet + remaining,
     }
   })
 
@@ -207,23 +220,31 @@ export default function PlanPage() {
   const open = data?.status !== 'past'
   const hasNumbers = (l: BudgetLine) => l.actual !== 0 || planned(l) !== 0 || l.planned !== 0
 
-  const section = (type: EntryType, allGroups: BudgetGroup[]) => {
+  const section = (type: EntryType, allGroups: BudgetGroup[], savings = false) => {
     const isIncome = type === 'Income'
     const groups = onlyFilled
       ? allGroups.map((g) => ({ ...g, lines: g.lines.filter(hasNumbers) })).filter((g) => g.lines.length > 0)
       : allGroups
-    const t = totals![isIncome ? 'income' : 'expense']
+    if (savings && allGroups.length === 0) return null
+    const t = totals![savings ? 'savings' : isIncome ? 'income' : 'expense']
+    const title = savings ? 'POUPANÇA E INVESTIMENTOS' : isIncome ? 'RECEITA' : 'DESPESAS'
     return (
       <>
         <tr>
-          <td colSpan={6} className={cx('px-3 py-1.5 text-sm font-bold tracking-wider text-white', isIncome ? 'bg-inc' : 'bg-exp')}>
-            {isIncome ? 'RECEITA' : 'DESPESAS'}
+          <td
+            colSpan={6}
+            className={cx(
+              'px-3 py-1.5 text-sm font-bold tracking-wider text-white',
+              savings ? 'bg-sav' : isIncome ? 'bg-inc' : 'bg-exp',
+            )}
+          >
+            {title}
           </td>
         </tr>
         {groups.map((g) => {
           const gPlanned = g.lines.reduce((a, l) => a + planned(l), 0)
           return [
-            <tr key={`g${g.id}`} className={isIncome ? 'bg-inc-row' : 'bg-exp-row'}>
+            <tr key={`g${g.id}`} className={savings ? 'bg-sav-row' : isIncome ? 'bg-inc-row' : 'bg-exp-row'}>
               <td className="px-3 py-1.5 font-bold tracking-wide uppercase">
                 <span className="inline-flex items-center gap-1.5">
                   <span className="size-2 rounded-full" style={{ background: g.color ?? '#999' }} />
@@ -306,8 +327,8 @@ export default function PlanPage() {
             )),
           ]
         })}
-        <tr className={cx('font-semibold', isIncome ? 'bg-tot' : 'bg-exp-total')}>
-          <td className="px-3 py-1.5">TOTAL {isIncome ? 'RECEITA' : 'DESPESAS'}</td>
+        <tr className={cx('font-semibold', savings ? 'bg-sav-total' : isIncome ? 'bg-tot' : 'bg-exp-total')}>
+          <td className="px-3 py-1.5">TOTAL {savings ? 'INVESTIDO' : title}</td>
           <Num v={t.planned} strong />
           <td />
           <Num v={t.actual} strong />
@@ -359,7 +380,7 @@ export default function PlanPage() {
 
       {data && totals && (
         <>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
             <Card label="Receita" hint="previsto → real">
               <Pair planned={totals.income.planned} actual={totals.income.actual} />
               <Progress type="Income" planned={totals.income.planned} actual={totals.income.actual} wide />
@@ -374,6 +395,9 @@ export default function PlanPage() {
                 actual={totals.income.actual - totals.expense.actual}
                 signed
               />
+            </Card>
+            <Card label="Investido" hint="previsto → real · não é despesa">
+              <Pair planned={totals.savings.planned} actual={totals.savings.actual} />
             </Card>
             <Card label="Saldo final previsto" hint={prev === null ? 'sem saldo (antes da data de início)' : `a partir do saldo anterior de ${formatMoney(prev)}`}>
               <Big v={plannedEnd} />
@@ -402,7 +426,7 @@ export default function PlanPage() {
 
           {perAccount.length > 1 && (
             <div className="card overflow-x-auto">
-              <table className="w-full min-w-[880px] text-sm">
+              <table className="w-full min-w-[980px] text-sm">
                 <thead className="bg-bg text-xs tracking-wide text-muted uppercase">
                   <tr>
                     <th className="px-4 py-2 text-left font-medium">Por conta</th>
@@ -415,6 +439,9 @@ export default function PlanPage() {
                     </th>
                     <th className="px-3 py-2 text-right font-medium" title="Previsto · por baixo, o real">
                       Receita − despesa
+                    </th>
+                    <th className="px-3 py-2 text-right font-medium" title="Poupança/investimentos: sai da conta, não é despesa">
+                      Investido
                     </th>
                     <th className="px-3 py-2 text-right font-medium">Saldo final previsto</th>
                     <th
@@ -444,6 +471,7 @@ export default function PlanPage() {
                       <PlanActual planned={a.plannedIncome} actual={a.actualIncome} />
                       <PlanActual planned={a.plannedExpense} actual={a.actualExpense} expense />
                       <PlanActual planned={a.plannedNet} actual={a.actualNet} signed />
+                      <PlanActual planned={a.plannedSavings} actual={a.actualSavings} />
                       <td className={cx('px-3 py-1.5 text-right font-medium tabular', (a.plannedEnd ?? 0) < 0 && 'text-neg')}>
                         {a.plannedEnd === null ? '—' : formatMoney(a.plannedEnd)}
                       </td>
@@ -458,6 +486,7 @@ export default function PlanPage() {
                     <PlanActual planned={sumOf((a) => a.plannedIncome)} actual={sumOf((a) => a.actualIncome)} />
                     <PlanActual planned={sumOf((a) => a.plannedExpense)} actual={sumOf((a) => a.actualExpense)} expense />
                     <PlanActual planned={sumOf((a) => a.plannedNet)} actual={sumOf((a) => a.actualNet)} signed />
+                    <PlanActual planned={sumOf((a) => a.plannedSavings)} actual={sumOf((a) => a.actualSavings)} />
                     <td className="px-3 py-1.5 text-right tabular">{anyBalance ? formatMoney(sumOf((a) => a.plannedEnd)) : '—'}</td>
                     <td className="px-3 py-1.5 text-right tabular">{anyBalance ? formatMoney(sumOf((a) => a.projectedEnd)) : '—'}</td>
                   </tr>
@@ -517,6 +546,7 @@ export default function PlanPage() {
               <tbody>
                 {section('Income', data.income)}
                 {section('Expense', data.expense)}
+                {section('Expense', data.savings, true)}
               </tbody>
             </table>
           </div>

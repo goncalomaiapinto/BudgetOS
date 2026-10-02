@@ -73,6 +73,8 @@ export interface Category {
   isActive: boolean
   transactionCount: number
   subCategories: SubCategory[]
+  /** Expense category that is savings/investment (not consumption). */
+  isSavings: boolean
 }
 
 export interface Transaction {
@@ -125,7 +127,8 @@ export interface TransactionPage {
   totalCount: number
   page: number
   pageSize: number
-  totals: { income: number; expense: number; net: number }
+  /** expense = consumption; invested = savings/investment categories; net = income − expense − invested. */
+  totals: { income: number; expense: number; net: number; invested: number }
 }
 
 export interface GridRow {
@@ -172,6 +175,8 @@ export interface MonthlyGrid {
   endBalance: (number | null)[]
   /** With an account filter: that account's transfers (in − out) per month, already included in `net`. */
   transfers?: number[] | null
+  /** Savings/investment categories, apart from expenses. net = income − expense; end = previous + net − savings (+ transfers). */
+  savings?: GridSection | null
 }
 
 export interface MonthSummary {
@@ -182,6 +187,8 @@ export interface MonthSummary {
   net: number
   balance: number | null
   savingsRate: number | null
+  /** Put into savings/investment categories (not part of expense). */
+  invested: number
 }
 
 export interface Dashboard {
@@ -190,6 +197,8 @@ export interface Dashboard {
   accountBalances: { accountId: number; name: string; kind: AccountKind; color: string | null; balance: number | null }[]
   /** Estimated value of all investments at the end of the month. */
   investments: number
+  /** Same, at the end of the previous month. */
+  previousInvestments: number
   previous: MonthSummary
   series: MonthSummary[]
   expensesByCategory: { categoryId: number; name: string; color: string | null; amount: number; percent: number }[]
@@ -232,6 +241,8 @@ export interface BudgetAccount {
   plannedExpense: number
   /** Transfers in − out this month (included in projectedEnd). */
   transferNet: number
+  plannedSavings: number
+  actualSavings: number
 }
 
 export interface BudgetGroup {
@@ -260,6 +271,8 @@ export interface MonthBudget {
   actualEndBalance: number | null
   defaultAccountId: number
   accounts: BudgetAccount[]
+  savings: BudgetGroup[]
+  savingsTotals: { planned: number; actual: number; projected: number }
 }
 
 export type BudgetItem = { subCategoryId: number; amount: number; accountId?: number | null }
@@ -363,8 +376,9 @@ export const api = {
   },
   categories: {
     list: () => request<Category[]>('GET', '/categories'),
-    create: (c: { name: string; type: EntryType; color: string | null }) => request<Category>('POST', '/categories', c),
-    update: (id: number, c: { name: string; type?: EntryType; color: string | null; isActive?: boolean }) =>
+    create: (c: { name: string; type: EntryType; color: string | null; isSavings?: boolean }) =>
+      request<Category>('POST', '/categories', c),
+    update: (id: number, c: { name: string; type?: EntryType; color: string | null; isActive?: boolean; isSavings?: boolean }) =>
       request<Category>('PUT', `/categories/${id}`, c),
     reorder: (ids: number[]) => request<void>('POST', '/categories/reorder', { ids }),
     remove: (id: number, o: DeleteOptions = {}) => request<void>('DELETE', `/categories/${id}${qs(o)}`),

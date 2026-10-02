@@ -22,7 +22,8 @@ public record BudgetAccount(
     int Id, string Name, AccountKind Kind, string? Color,
     decimal? PreviousBalance, decimal ActualNet, decimal PlannedNet, decimal? PlannedEnd, decimal? ProjectedEnd,
     decimal ActualIncome = 0, decimal ActualExpense = 0, decimal PlannedIncome = 0, decimal PlannedExpense = 0,
-    decimal TransferNet = 0); // transfers in − out this month (already in ProjectedEnd, not in ActualNet)
+    decimal TransferNet = 0, // transfers in − out this month (already in ProjectedEnd, not in ActualNet)
+    decimal PlannedSavings = 0, decimal ActualSavings = 0); // savings/investments: lower the balance, not in *Net
 
 public record BudgetGroup(
     int Id, string Name, string? Color, bool IsActive, List<BudgetLine> Lines, decimal Planned, decimal Actual, decimal Projected);
@@ -43,7 +44,10 @@ public record MonthBudget(
     decimal? ProjectedEndBalance,
     decimal? ActualEndBalance,
     int DefaultAccountId,
-    List<BudgetAccount> Accounts);
+    List<BudgetAccount> Accounts,
+    // Expense categories marked as savings/investments, planned and reported apart from consumption.
+    List<BudgetGroup> Savings,
+    BudgetTotals SavingsTotals);
 
 public record BudgetItem(int SubCategoryId, decimal Amount, int? AccountId = null);
 
@@ -86,10 +90,10 @@ public static class BudgetEndpoints
 
         decimal Project(decimal planned, decimal actual) => status == "past" ? actual : Math.Max(planned, actual);
 
-        List<BudgetGroup> BuildGroups(EntryType type)
+        List<BudgetGroup> BuildGroups(EntryType type, bool savings = false)
         {
             var groups = new List<BudgetGroup>();
-            foreach (var cat in categories.Where(c => c.Type == type))
+            foreach (var cat in categories.Where(c => c.Type == type && c.IsSavings == savings))
             {
                 var lines = new List<BudgetLine>();
                 foreach (var sub in cat.SubCategories.OrderBy(s => s.SortOrder).ThenBy(s => s.Name))
@@ -115,8 +119,10 @@ public static class BudgetEndpoints
 
         var income = BuildGroups(EntryType.Income);
         var expense = BuildGroups(EntryType.Expense);
+        var savings = BuildGroups(EntryType.Expense, savings: true);
         var incomeTotals = Totals(income);
         var expenseTotals = Totals(expense);
+        var savingsTotals = Totals(savings);
 
         // Same "Saldo Anterior" as the monthly grid: opening balance + net of every month since the start month.
         var settings = await SettingsEndpoints.LoadAsync(db);
@@ -142,42 +148,48 @@ public static class BudgetEndpoints
             {
                 x.Key,
                 Income = x.Sum(t => t.Type == EntryType.Income ? t.Amount : 0),
-                Expense = x.Sum(t => t.Type == EntryType.Expense ? t.Amount : 0),
+                Expense = x.Sum(t => t.Type == EntryType.Expense && !t.Category.IsSavings ? t.Amount : 0),
+                Savings = x.Sum(t => t.Type == EntryType.Expense && t.Category.IsSavings ? t.Amount : 0),
             })
             .ToDictionaryAsync(x => x.Key);
 
-        var allLines = income.SelectMany(g => g.Lines.Select(l => (Line: l, Sign: 1m)))
-            .Concat(expense.SelectMany(g => g.Lines.Select(l => (Line: l, Sign: -1m))))
+        var allLines = income.SelectMany(g => g.Lines.Select(l => (Line: l, Sign: 1m, IsSavings: false)))
+            .Concat(expense.SelectMany(g => g.Lines.Select(l => (Line: l, Sign: -1m, IsSavings: false))))
+            .Concat(savings.SelectMany(g => g.Lines.Select(l => (Line: l, Sign: -1m, IsSavings: true))))
             .ToList();
         var accounts = new List<BudgetAccount>();
         foreach (var a in await db.Accounts.AsNoTracking().OrderBy(a => a.SortOrder).ThenBy(a => a.Name).ToListAsync())
         {
             var mine = allLines.Where(x => (x.Line.AccountId ?? defaultAccountId) == a.Id).ToList();
             var plannedIncome = mine.Where(x => x.Sign > 0).Sum(x => x.Line.Planned);
-            var plannedExpense = mine.Where(x => x.Sign < 0).Sum(x => x.Line.Planned);
+            var plannedExpense = mine.Where(x => x.Sign < 0 && !x.IsSavings).Sum(x => x.Line.Planned);
+            var plannedSavings = mine.Where(x => x.IsSavings).Sum(x => x.Line.Planned);
             var plannedNet = plannedIncome - plannedExpense;
             // What is planned on this account but hasn't happened yet (nothing left once the month is closed).
             var remaining = status == "past" ? 0 : mine.Sum(x => x.Sign * Math.Max(x.Line.Planned - x.Line.Actual, 0));
             var actual = thisMonth.GetValueOrDefault(a.Id);
             var actualIncome = actual?.Income ?? 0;
             var actualExpense = actual?.Expense ?? 0;
+            var actualSavings = actual?.Savings ?? 0;
             var actualNet = actualIncome - actualExpense;
             decimal? prev = beforeStart ? null
                 : a.OpeningBalance + netBefore.GetValueOrDefault(a.Id) + transfersBefore.GetValueOrDefault(a.Id);
             var transferNet = transfersThisMonth.GetValueOrDefault(a.Id);
-            if (!a.IsActive && plannedNet == 0 && actualNet == 0 && transferNet == 0 && (prev ?? 0) == 0) continue;
+            if (!a.IsActive && plannedNet == 0 && actualNet == 0 && transferNet == 0 && plannedSavings == 0 && actualSavings == 0
+                && (prev ?? 0) == 0) continue;
             accounts.Add(new BudgetAccount(a.Id, a.Name, a.Kind, a.Color, prev, actualNet, plannedNet,
-                prev + plannedNet, prev + actualNet + transferNet + remaining, actualIncome, actualExpense, plannedIncome, plannedExpense,
-                transferNet));
+                prev + plannedNet - plannedSavings,
+                prev + actualNet - actualSavings + transferNet + remaining,
+                actualIncome, actualExpense, plannedIncome, plannedExpense, transferNet, plannedSavings, actualSavings));
         }
 
         return Results.Ok(new MonthBudget(
             y, m, status, plans.Count > 0, previous,
             income, expense, incomeTotals, expenseTotals,
-            previous + incomeTotals.Planned - expenseTotals.Planned,
-            previous + incomeTotals.Projected - expenseTotals.Projected,
-            previous + incomeTotals.Actual - expenseTotals.Actual,
-            defaultAccountId, accounts));
+            previous + incomeTotals.Planned - expenseTotals.Planned - savingsTotals.Planned,
+            previous + incomeTotals.Projected - expenseTotals.Projected - savingsTotals.Projected,
+            previous + incomeTotals.Actual - expenseTotals.Actual - savingsTotals.Actual,
+            defaultAccountId, accounts, savings, savingsTotals));
     }
 
     /// <summary>Replaces the whole plan of a month. Amounts of 0 remove the line.</summary>

@@ -23,7 +23,7 @@ function loadCollapsed(): Set<number> {
 }
 
 // Row look-ups mirror the Excel: coloured label column, white value cells, light-blue total column.
-type RowKind = 'item' | 'group' | 'subtotal' | 'incTotal' | 'expTotal' | 'balance'
+type RowKind = 'item' | 'group' | 'subtotal' | 'incTotal' | 'expTotal' | 'balance' | 'savGroup' | 'savSubtotal' | 'savTotal'
 
 const labelBg: Record<RowKind, string> = {
   item: '',
@@ -32,6 +32,9 @@ const labelBg: Record<RowKind, string> = {
   incTotal: 'bg-tot',
   expTotal: 'bg-exp-total',
   balance: 'bg-surface',
+  savGroup: 'bg-sav-row',
+  savSubtotal: 'bg-sav-sub',
+  savTotal: 'bg-sav-total',
 }
 const valueBg: Record<RowKind, string> = {
   item: 'bg-surface',
@@ -40,6 +43,9 @@ const valueBg: Record<RowKind, string> = {
   incTotal: 'bg-tot',
   expTotal: 'bg-exp-total',
   balance: 'bg-surface',
+  savGroup: 'bg-surface',
+  savSubtotal: 'bg-sav-sub',
+  savTotal: 'bg-sav-total',
 }
 
 function Value({ v, strong, signed }: { v: number | null; strong?: boolean; signed?: boolean }) {
@@ -94,8 +100,9 @@ function Row({
   signed?: boolean
   labelExtra?: string
 }) {
-  const strong = kind !== 'item' && kind !== 'group'
-  const totalBg = kind === 'item' || kind === 'group' || kind === 'balance' ? 'bg-inc-row' : valueBg[kind]
+  const strong = kind !== 'item' && kind !== 'group' && kind !== 'savGroup'
+  const totalBg =
+    kind === 'item' || kind === 'group' || kind === 'savGroup' || kind === 'balance' ? 'bg-inc-row' : valueBg[kind]
   return (
     <tr className={cx('group/row', kind === 'item' && 'hover:[&>td]:brightness-[0.97] dark:hover:[&>td]:brightness-125')}>
       <td
@@ -215,7 +222,11 @@ export default function BudgetPage() {
   const isCurrentYear = year === today.getFullYear()
   const currentMonth = isCurrentYear ? today.getMonth() + 1 : 0
   const isFuture = (m: number) => year > today.getFullYear() || (isCurrentYear && m > currentMonth)
-  const isEmpty = (m: number) => !!grid && grid.income.months[m - 1] === 0 && grid.expense.months[m - 1] === 0
+  const isEmpty = (m: number) =>
+    !!grid &&
+    grid.income.months[m - 1] === 0 &&
+    grid.expense.months[m - 1] === 0 &&
+    (grid.savings?.months[m - 1] ?? 0) === 0
 
   // Past months without transactions are hidden; future months stay visible but faded.
   const visible = Array.from({ length: 12 }, (_, i) => i + 1).filter((m) => isFuture(m) || m === currentMonth || !isEmpty(m))
@@ -247,8 +258,8 @@ export default function BudgetPage() {
   }
   const avg = (total: number) => total / monthsForAverage
 
-  const renderCategory = (cat: GridCategory, section: GridSection, grouped: boolean) => {
-    const rowBg = section.type === 'Income' ? 'bg-inc-row' : 'bg-exp-row'
+  const renderCategory = (cat: GridCategory, section: GridSection, grouped: boolean, savings = false) => {
+    const rowBg = savings ? 'bg-sav-row' : section.type === 'Income' ? 'bg-inc-row' : 'bg-exp-row'
     const items = cat.rows.map((r) => (
       <Row
         cols={cols}
@@ -275,7 +286,7 @@ export default function BudgetPage() {
       <Row
         cols={cols}
         key={`${cat.id}-h`}
-        kind="group"
+        kind={savings ? 'savGroup' : 'group'}
         labelExtra={rowBg}
         label={
           <button
@@ -304,7 +315,7 @@ export default function BudgetPage() {
       <Row
         cols={cols}
         key={`${cat.id}-s`}
-        kind="subtotal"
+        kind={savings ? 'savSubtotal' : 'subtotal'}
         label={<span className="pl-5 text-xs font-medium tracking-wide text-fg/70 uppercase">Subtotal</span>}
         months={cat.months}
         total={cat.total}
@@ -468,10 +479,49 @@ export default function BudgetPage() {
                 onCell={(m) => drill({ type: 'Expense', month: m })}
               />
 
+              {/* Savings / investments: money that leaves the accounts but isn't consumption. */}
+              {grid.savings && grid.savings.categories.length > 0 && (
+                <>
+                  <tr aria-hidden="true">
+                    <td colSpan={span} className="h-4 bg-surface" />
+                  </tr>
+                  <SectionHeader label="POUPANÇA E INVESTIMENTOS" color="bg-sav" span={span} />
+                  {grid.savings.categories.flatMap((c) => renderCategory(c, grid.savings!, true, true))}
+                  <Row
+                    cols={cols}
+                    kind="savTotal"
+                    label="TOTAL"
+                    months={grid.savings.months}
+                    total={grid.savings.total}
+                    average={avg(grid.savings.total)}
+                  />
+                </>
+              )}
+
               <tr aria-hidden="true">
                 <td colSpan={span} className="h-4 border-b-2 border-line bg-surface" />
               </tr>
 
+              <Row
+                cols={cols}
+                kind="balance"
+                label={<span title="Receita − despesas (o que foi investido não conta como despesa)">Saldo do mês</span>}
+                months={grid.net}
+                total={grid.net.reduce((a, b) => a + b, 0)}
+                average={avg(grid.net.reduce((a, b) => a + b, 0))}
+                signed
+              />
+              {grid.savings && grid.savings.total !== 0 && (
+                <Row
+                  cols={cols}
+                  kind="balance"
+                  label={<span title="Dinheiro posto em poupança/investimentos (sai das contas)">Investido</span>}
+                  months={grid.savings.months.map((v) => -v)}
+                  total={-grid.savings.total}
+                  average={avg(-grid.savings.total)}
+                  signed
+                />
+              )}
               {/* With an account filter, that account's transfers (in − out): part of its balance, not income/expense. */}
               {grid.transfers?.some((v) => v !== 0) && (
                 <Row
@@ -491,16 +541,11 @@ export default function BudgetPage() {
               <Row
                 cols={cols}
                 kind="balance"
-                label="Saldo do mês"
-                months={grid.net}
-                total={grid.net.reduce((a, b) => a + b, 0)}
-                average={avg(grid.net.reduce((a, b) => a + b, 0))}
-                signed
-              />
-              <Row
-                cols={cols}
-                kind="balance"
-                label={<span title="Saldo no fim de cada mês (saldo anterior + saldo do mês)">Saldo acumulado</span>}
+                label={
+                  <span title="Saldo das contas no fim de cada mês (saldo anterior + saldo do mês − investido ± transferências)">
+                    Saldo acumulado
+                  </span>
+                }
                 months={grid.endBalance}
                 total={lastBalance}
                 signed

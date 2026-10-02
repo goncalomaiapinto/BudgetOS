@@ -26,6 +26,12 @@
   --c-exp: #c0504d;
   --c-net: #6e9a2f;
   --c-grid: #e6e9ee;
+  --c-sav: #7a4fb5; /* chart: invested */
+  /* POUPANÇA E INVESTIMENTOS section */
+  --sav: #6b4fa0;
+  --sav-row: #ece6f5;
+  --sav-sub: #d9cdeb;
+  --sav-total: #c3b1e0;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -50,6 +56,11 @@
     --c-exp: #b53f3c;
     --c-net: #6fa333;
     --c-grid: #232a33;
+    --c-sav: #9b72d6;
+    --sav: #5b4290;
+    --sav-row: #221c2e;
+    --sav-sub: #2f2640;
+    --sav-total: #3d3155;
   }
 }
 
@@ -60,6 +71,10 @@
   --color-exp-row: var(--exp-row);
   --color-exp-sub: var(--exp-sub);
   --color-exp-total: var(--exp-total);
+  --color-sav: var(--sav);
+  --color-sav-row: var(--sav-row);
+  --color-sav-sub: var(--sav-sub);
+  --color-sav-total: var(--sav-total);
   --color-tot: var(--tot);
   --color-month: var(--month);
   --color-pos: var(--pos);

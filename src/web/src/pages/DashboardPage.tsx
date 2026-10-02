@@ -53,6 +53,16 @@ export default function DashboardPage() {
 
   const prevName = MONTHS_SHORT[(month + 10) % 12]
 
+  // The month in progress before the income arrives (salary on the last day): comparisons and the savings rate
+  // would only be noise, so they wait until there is more income than expenses or the month closes.
+  const isCurrentMonth = year === today.getFullYear() && month === today.getMonth() + 1
+  const waiting = !!data && isCurrentMonth && data.current.income < data.current.expense
+  const inProgress = waiting ? 'mês a decorrer' : undefined
+  const ratePercent = (r: number) => (r < -1 ? '< −100 %' : formatPercent(r))
+  const netWorth = data && data.current.balance !== null ? data.current.balance + data.investments : null
+  const prevNetWorth =
+    data && data.previous.balance !== null ? data.previous.balance + data.previousInvestments : null
+
   return (
     <div className="mx-auto max-w-7xl space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -73,14 +83,16 @@ export default function DashboardPage() {
             <StatCard
               label="Receita do mês"
               value={formatMoney(data.current.income)}
-              delta={relDelta(data.current.income, data.previous.income)}
+              delta={waiting ? null : relDelta(data.current.income, data.previous.income)}
+              deltaText={inProgress}
               goodWhenUp
               prevName={prevName}
             />
             <StatCard
               label="Despesas do mês"
               value={formatMoney(data.current.expense)}
-              delta={relDelta(data.current.expense, data.previous.expense)}
+              delta={waiting ? null : relDelta(data.current.expense, data.previous.expense)}
+              deltaText={inProgress}
               goodWhenUp={false}
               prevName={prevName}
             />
@@ -88,7 +100,8 @@ export default function DashboardPage() {
               label="Saldo do mês"
               value={formatMoney(data.current.net)}
               valueClass={data.current.net < 0 ? 'text-neg' : undefined}
-              delta={absDelta(data.current.net, data.previous.net)}
+              delta={waiting ? null : absDelta(data.current.net, data.previous.net)}
+              deltaText={inProgress}
               goodWhenUp
               prevName={prevName}
             />
@@ -112,6 +125,23 @@ export default function DashboardPage() {
                         </span>
                       </li>
                     ))}
+                    {netWorth !== null && (
+                      <li
+                        className="mt-1 border-t border-line pt-1"
+                        title="Património = saldo das contas + valor dos investimentos"
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <span className="truncate">Património</span>
+                          <span className="ml-auto font-medium text-fg tabular">{formatMoney(netWorth)}</span>
+                        </span>
+                        {prevNetWorth !== null && netWorth !== prevNetWorth && (
+                          <span className={cx('block text-right tabular', netWorth > prevNetWorth ? 'text-pos' : 'text-neg')}>
+                            {netWorth > prevNetWorth ? '+' : '−'}
+                            {formatMoney(Math.abs(netWorth - prevNetWorth))} vs {prevName}
+                          </span>
+                        )}
+                      </li>
+                    )}
                   </ul>
                 ) : undefined
               }
@@ -125,10 +155,16 @@ export default function DashboardPage() {
             />
             <StatCard
               label="% poupada"
-              value={data.current.savingsRate === null ? '—' : formatPercent(data.current.savingsRate)}
-              valueClass={(data.current.savingsRate ?? 0) < 0 ? 'text-neg' : undefined}
+              value={waiting || data.current.savingsRate === null ? '—' : ratePercent(data.current.savingsRate)}
+              valueClass={!waiting && (data.current.savingsRate ?? 0) < 0 ? 'text-neg' : undefined}
+              extra={waiting ? 'à espera da receita do mês' : undefined}
+              deltaText={waiting ? '' : undefined}
               delta={
-                data.current.savingsRate !== null && data.previous.savingsRate !== null
+                !waiting &&
+                data.current.savingsRate !== null &&
+                data.previous.savingsRate !== null &&
+                data.current.savingsRate >= -1 &&
+                data.previous.savingsRate >= -1
                   ? {
                       up: data.current.savingsRate >= data.previous.savingsRate,
                       text: `${fmtPp(data.current.savingsRate - data.previous.savingsRate)} p.p.`,
@@ -146,6 +182,11 @@ export default function DashboardPage() {
                 extra={
                   data.current.balance !== null ? (
                     <>
+                      {data.current.invested !== 0 && (
+                        <div>
+                          Investido este mês <span className="font-medium text-fg">{formatMoney(data.current.invested)}</span>
+                        </div>
+                      )}
                       Património <span className="font-medium text-fg">{formatMoney(data.current.balance + data.investments)}</span>
                     </>
                   ) : undefined
@@ -160,7 +201,9 @@ export default function DashboardPage() {
 
           <div className="card p-4">
             <h2 className="mb-1 text-sm font-semibold">Últimos 12 meses</h2>
-            <p className="mb-3 text-xs text-muted">Receita e despesas por mês, com o saldo do mês em linha</p>
+            <p className="mb-3 text-xs text-muted">
+              Receita, despesas e investido por mês, com o saldo do mês (receita − despesas) em linha
+            </p>
             <div className="h-72">
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart
@@ -198,6 +241,7 @@ export default function DashboardPage() {
                           </div>
                           <TipRow color="var(--c-inc)" label="Receita" value={s.income} />
                           <TipRow color="var(--c-exp)" label="Despesas" value={s.expense} />
+                          {s.invested !== 0 && <TipRow color="var(--c-sav)" label="Investido" value={s.invested} />}
                           <TipRow color="var(--c-net)" label="Saldo do mês" value={s.net} line />
                           {s.balance !== null && (
                             <div className="mt-1 border-t border-line pt-1 text-muted">
@@ -218,6 +262,9 @@ export default function DashboardPage() {
                   />
                   <Bar dataKey="income" name="Receita" fill="var(--c-inc)" radius={[4, 4, 0, 0]} maxBarSize={22} isAnimationActive={false} />
                   <Bar dataKey="expense" name="Despesas" fill="var(--c-exp)" radius={[4, 4, 0, 0]} maxBarSize={22} isAnimationActive={false} />
+                  {data.series.some((s) => s.invested !== 0) && (
+                    <Bar dataKey="invested" name="Investido" fill="var(--c-sav)" radius={[4, 4, 0, 0]} maxBarSize={22} isAnimationActive={false} />
+                  )}
                   <Line
                     dataKey="net"
                     name="Saldo do mês"

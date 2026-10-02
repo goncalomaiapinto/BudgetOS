@@ -70,7 +70,7 @@ public static class Seed
         if (category is null)
         {
             var nextOrder = await db.Categories.Where(c => c.Type == EntryType.Expense).MaxAsync(c => (int?)c.SortOrder) ?? -1;
-            category = new Category { Name = "Investimentos", Type = EntryType.Expense, Color = "#1E8C6E", SortOrder = nextOrder + 1 };
+            category = new Category { Name = "Investimentos", Type = EntryType.Expense, Color = "#1E8C6E", SortOrder = nextOrder + 1, IsSavings = true };
             db.Categories.Add(category);
         }
 

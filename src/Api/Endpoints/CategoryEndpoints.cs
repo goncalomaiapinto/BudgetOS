@@ -8,9 +8,9 @@ public record SubCategoryDto(int Id, int CategoryId, string Name, int SortOrder,
 
 public record CategoryDto(
     int Id, string Name, EntryType Type, string? Color, int SortOrder, bool IsActive,
-    int TransactionCount, List<SubCategoryDto> SubCategories);
+    int TransactionCount, List<SubCategoryDto> SubCategories, bool IsSavings = false);
 
-public record CategoryRequest(string? Name, EntryType? Type, string? Color, int? SortOrder, bool? IsActive);
+public record CategoryRequest(string? Name, EntryType? Type, string? Color, int? SortOrder, bool? IsActive, bool? IsSavings = null);
 
 public record SubCategoryRequest(int? CategoryId, string? Name, int? SortOrder, bool? IsActive);
 
@@ -47,7 +47,8 @@ public static partial class CategoryEndpoints
                         .Where(s => activeOnly != true || s.IsActive)
                         .OrderBy(s => s.SortOrder).ThenBy(s => s.Name)
                         .Select(s => new SubCategoryDto(s.Id, s.CategoryId, s.Name, s.SortOrder, s.IsActive, s.Transactions.Count()))
-                        .ToList()))
+                        .ToList(),
+                    c.IsSavings))
                 .ToListAsync();
             return Results.Ok(list);
         });
@@ -74,6 +75,7 @@ public static partial class CategoryEndpoints
                 Color = NormalizeColor(req.Color),
                 SortOrder = req.SortOrder ?? nextOrder + 1,
                 IsActive = req.IsActive ?? true,
+                IsSavings = type == EntryType.Expense && req.IsSavings == true,
             };
             db.Categories.Add(entity);
             await db.SaveChangesAsync();
@@ -101,6 +103,8 @@ public static partial class CategoryEndpoints
             entity.Color = NormalizeColor(req.Color);
             if (req.SortOrder is { } order) entity.SortOrder = order;
             if (req.IsActive is { } active) entity.IsActive = active;
+            if (req.IsSavings is { } savings) entity.IsSavings = savings;
+            if (entity.Type != EntryType.Expense) entity.IsSavings = false; // only expenses can be savings
             await db.SaveChangesAsync();
             return Results.Ok(await LoadCategoryDto(db, id));
         });
@@ -354,7 +358,8 @@ public static partial class CategoryEndpoints
                 c.Transactions.Count(),
                 c.SubCategories.OrderBy(s => s.SortOrder).ThenBy(s => s.Name)
                     .Select(s => new SubCategoryDto(s.Id, s.CategoryId, s.Name, s.SortOrder, s.IsActive, s.Transactions.Count()))
-                    .ToList()))
+                    .ToList(),
+                c.IsSavings))
             .FirstOrDefaultAsync();
 
     private static Task<SubCategoryDto?> LoadSubCategoryDto(AppDbContext db, int id) =>

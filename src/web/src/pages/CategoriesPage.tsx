@@ -109,6 +109,7 @@ export default function CategoriesPage() {
                     {c.name}
                   </button>
                   {!c.isActive && <Badge>inativa</Badge>}
+                  {c.isSavings && <Badge>poupança / investimento</Badge>}
                   <span className="text-xs text-muted">
                     {subs.length} subcategoria{subs.length === 1 ? '' : 's'}
                   </span>
@@ -306,6 +307,7 @@ function CategoryDialog({
   const [name, setName] = useState(existing?.name ?? '')
   const [type, setType] = useState<EntryType>(existing?.type ?? state.type)
   const [color, setColor] = useState(existing?.color ?? SWATCHES[1])
+  const [isSavings, setIsSavings] = useState(existing?.isSavings ?? false)
   const [busy, setBusy] = useState(false)
   // Changing the type would break transactions already booked against the category.
   const typeLocked = !!existing && existing.transactionCount > 0
@@ -316,8 +318,8 @@ function CategoryDialog({
     const ok = await run(
       () =>
         existing
-          ? api.categories.update(existing.id, { name: name.trim(), type, color: color || null })
-          : api.categories.create({ name: name.trim(), type, color: color || null }),
+          ? api.categories.update(existing.id, { name: name.trim(), type, color: color || null, isSavings: type === 'Expense' && isSavings })
+          : api.categories.create({ name: name.trim(), type, color: color || null, isSavings: type === 'Expense' && isSavings }),
       existing ? 'Categoria atualizada.' : 'Categoria criada.',
     )
     setBusy(false)
@@ -381,6 +383,17 @@ function CategoryDialog({
             <p className="mt-1 text-xs text-muted">O tipo não pode ser alterado porque a categoria já tem transações.</p>
           )}
         </div>
+        {type === 'Expense' && (
+          <label className="flex cursor-pointer items-start gap-2 text-sm">
+            <input type="checkbox" className="mt-0.5" checked={isSavings} onChange={(e) => setIsSavings(e.target.checked)} />
+            <span>
+              <span className="font-medium">Poupança / investimento</span>
+              <span className="block text-xs text-muted">
+                O dinheiro sai da conta mas não é consumo: aparece à parte das despesas (e conta como poupado na % poupada).
+              </span>
+            </span>
+          </label>
+        )}
         <div>
           <label className="label" htmlFor="cat-color">
             Cor
