@@ -1,0 +1,32 @@
+ORÇAMENTO PESSOAL - INSTALAÇÃO
+==============================
+
+A app corre só no teu PC: os dados não saem daqui e não há conta nem internet envolvidas.
+
+1. Instalar a base de dados (só uma vez)
+   Descarrega e instala o "SQL Server Express LocalDB" da Microsoft (gratuito):
+   https://download.microsoft.com/download/3/8/d/38de7036-2433-4207-8eae-06e247e17b25/SqlLocalDB.msi
+   Abre o ficheiro, aceita a licença e carrega em "Seguinte" até ao fim.
+
+2. Desbloquear o zip
+   Antes de extrair: botão direito no OrcamentoPessoal.zip > Propriedades >
+   marca "Desbloquear" (em baixo) > OK.
+
+3. Extrair para uma pasta fixa
+   Por exemplo C:\OrcamentoPessoal (não deixes nos Transferências: a app corre a partir dali).
+
+4. Instalar
+   Duplo clique em install-autostart.cmd.
+   Se aparecer "O Windows protegeu o seu PC": Mais informações > Executar mesmo assim.
+   O browser abre em http://localhost:5180 e a partir daqui a app arranca sozinha com o Windows.
+
+5. (Opcional) Ter como aplicação
+   No Edge: menu ... > Aplicações > Instalar este site como aplicação. Depois afixa na barra de tarefas.
+
+Primeiros passos na app
+   Definições: muda os nomes das contas, os saldos iniciais e a data de início.
+   Categorias: ajusta à tua vida.
+
+Desinstalar
+   Duplo clique em uninstall-autostart.cmd e apaga a pasta. Os dados ficam na base de dados LocalDB
+   ("OrcamentoPessoal"); cópias de segurança semanais ficam na pasta "backups" ao lado da app.

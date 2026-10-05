@@ -5,6 +5,13 @@ cd /d "%~dp0"
 
 rem Publishes the app (if needed) and registers a scheduled task that starts it, hidden, every time you log in.
 
+reg query "HKLM\SOFTWARE\Microsoft\Microsoft SQL Server Local DB\Installed Versions" >nul 2>nul
+if errorlevel 1 (
+    echo [ERRO] Falta o SQL Server Express LocalDB. Instale-o primeiro - ver LEIA-ME.txt.
+    pause
+    exit /b 1
+)
+
 if not exist "%~dp0app\Api.exe" (
     echo A app ainda nao foi publicada. A publicar primeiro...
     set "NO_PAUSE=1"

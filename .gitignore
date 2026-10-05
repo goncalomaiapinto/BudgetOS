@@ -37,3 +37,4 @@ backups/
 *.pdf
 *.ofx
 *.qif
+/pacote/
